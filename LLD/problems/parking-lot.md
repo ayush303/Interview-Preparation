@@ -8,13 +8,17 @@
 5. The system should track the availability of parking spots and provide real-time information to customers.
 6. The system should handle multiple entry and exit points and support concurrent access.
 
-## UML Class Diagram
+## UML Class Diagram 1
 
 ![](../class-diagrams/parkinglot-class-diagram.png)
 
 ## Entity Overview
 
 ![](../class-diagrams/parking-lot-entity-overview.png)
+
+## UML Class Diagram 2 (AlgoMaster)
+
+![](../class-diagrams/parkinglot-class-diagram-2.png)
 
 ## Implementations
 #### [Java Implementation](../solutions/java/src/parkinglot/)
