@@ -14,7 +14,7 @@
 
 ## Entity Overview
 
-![](../class-diagrams/parkingLotEntityOverview.excalidraw)
+![](../class-diagrams/parkingLotEntityOverview.png)
 
 ## Implementations
 #### [Java Implementation](../solutions/java/src/parkinglot/)
