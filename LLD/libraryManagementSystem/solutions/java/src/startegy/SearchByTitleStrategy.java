@@ -1,0 +1,19 @@
+package startegy;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import entity.LibraryItem;
+
+public class SearchByTitleStrategy implements SearchStrategy {
+
+    @Override
+    public List<LibraryItem> search(String query, List<LibraryItem> items) {
+        List<LibraryItem> result = new ArrayList<>();
+        items.stream()
+                .filter(item -> item.getTitle().toLowerCase().contains(query.toLowerCase()))
+                .forEach(result::add);
+        return result;
+    }
+
+}
