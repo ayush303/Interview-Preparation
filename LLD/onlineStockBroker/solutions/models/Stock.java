@@ -5,6 +5,12 @@ import java.util.List;
 
 import LLD.onlineStockBroker.solutions.observer.StockObserver;
 
+/**
+ * Represents a publicly traded stock.
+ * price is volatile so that the Last Traded Price (LTP) updated in one thread
+ * is always visible to other threads reading it (no stale cache).
+ */
+
 public class Stock {
     private final String symbol;
     private double price;
@@ -23,6 +29,10 @@ public class Stock {
         return price;
     }
 
+    /**
+     * Updated after every successful trade execution to reflect the LTP.
+     * volatile write ensures other threads immediately see the new price.
+     */
     public void setPrice(double newPrice) {
         if (this.price != newPrice) {
             this.price = newPrice;

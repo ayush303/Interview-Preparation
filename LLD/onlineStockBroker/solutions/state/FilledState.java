@@ -3,13 +3,22 @@ package LLD.onlineStockBroker.solutions.state;
 import LLD.onlineStockBroker.solutions.models.Order;
 
 public class FilledState implements OrderState {
+
     @Override
     public void handle(Order order) {
-        System.out.println("Order is already filled.");
+        System.out.printf("  [State] Order %s is fully FILLED — %d/%d shares traded.%n",
+                order.getOrderId().substring(0, 8), order.getTotalQuantity(), order.getTotalQuantity());
     }
 
     @Override
     public void cancel(Order order) {
-        System.out.println("Cannot cancel a filled order.");
+        // Cannot cancel what is already done
+        System.out.printf("  [State] Cannot cancel order %s — already FILLED.%n",
+                order.getOrderId().substring(0, 8));
+    }
+
+    @Override
+    public String getStateName() {
+        return "FILLED";
     }
 }
