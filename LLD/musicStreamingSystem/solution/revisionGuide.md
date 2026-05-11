@@ -1,84 +1,186 @@
 # Music Streaming System — LLD Revision Guide
 
-> **Purpose:** Complete revision reference. Read this instead of the entire codebase.
-> Covers: problem statement, all design patterns (why + without analysis), entity/class/sequence diagrams, concurrency strategy, application flow, and known bugs.
+> **Read once. Recall everything.**
+> 7 design patterns · 28 classes · Spotify-like streaming service
 
 ---
 
 ## Table of Contents
-1. [Problem Statement](#1-problem-statement)
-2. [System Overview](#2-system-overview)
-3. [Entity Relationship Diagram](#3-entity-relationship-diagram)
-4. [Class Diagram](#4-class-diagram)
+1. [System in One Story](#1-system-in-one-story)
+2. [Pattern Map — Memory Hook](#2-pattern-map--memory-hook)
+3. [Class Responsibility Cheatsheet](#3-class-responsibility-cheatsheet)
+4. [Draw the Class Diagram in 5 Steps](#4-draw-the-class-diagram-in-5-steps)
 5. [Design Patterns — Deep Dive](#5-design-patterns--deep-dive)
-6. [Concurrency Strategy](#6-concurrency-strategy)
-7. [Sequence Diagrams — Key Flows](#7-sequence-diagrams--key-flows)
-8. [Application Flow](#8-application-flow)
+6. [Key Flows — Sequence Diagrams](#6-key-flows--sequence-diagrams)
+7. [Player State Machine](#7-player-state-machine)
+8. [Concurrency & Known Bugs](#8-concurrency--known-bugs)
 9. [Quick Revision Cheatsheet](#9-quick-revision-cheatsheet)
 
 ---
 
-## 1. Problem Statement
+## 1. System in One Story
 
-Design a **Spotify-like Music Streaming Service** where:
+> A `User` is **built** (Builder) with a subscription tier that determines their `PlaybackStrategy` (Strategy — Free gets ads, Premium doesn't). The `MusicStreamingSystem` (Singleton + Facade) is the one global entry point. `Artist` is a Subject — when it releases an `Album`, all following `User`s get notified (Observer). The `Player` (State — Playing/Paused/Stopped) loads a `Playable` object — a `Song`, `Album`, or `Playlist` all work the same way (Composite). UI triggers `PlayCommand`, `PauseCommand`, `NextTrackCommand` — all decouple from `Player` (Command).
 
-- Users can **browse and search** for songs, albums, and artists
-- Users can **create and manage playlists**
-- The system supports **user authentication and authorization** (via subscription tiers: FREE vs PREMIUM)
-- Users can **play, pause, skip** tracks and the player has a defined lifecycle
-- The system **recommends songs** based on user preferences and listening history
-- The system handles **concurrent requests** and ensures smooth streaming for multiple users
-- The design is **scalable** for large volumes of songs and users
-- The design is **extensible** for features like social sharing and offline playback
+**Mnemonic — 7 patterns: "SB-OSC-SC"**
+- **S**ingleton + Facade → `MusicStreamingSystem`
+- **B**uilder → `User.Builder`
+- **O**bserver → `Artist` notifies `User`
+- **S**tate → `Player` lifecycle
+- **C**ommand → Play/Pause/Next
+- **S**trategy → Free/Premium playback + Recommendations
+- **C**omposite → `Song`/`Album`/`Playlist` all implement `Playable`
 
-### Core Entities
+---
 
-| Entity | Responsibility |
+## 2. Pattern Map — Memory Hook
+
+| Pattern | Interface / Abstract | Concrete Classes | One-line Why |
+|---|---|---|---|
+| Singleton + Facade | — | `MusicStreamingSystem` | One shared catalog; hides Player/Search/Recommendation complexity |
+| Builder | — | `User.Builder` | Inject correct strategy at build time; avoid positional constructor |
+| Observer | `ArtistObserver` (interface), `Subject` (abstract) | `Artist` (Subject), `User` (Observer) | Artist notifies followers on album release — zero coupling to User class |
+| State | `PlayerState` (interface) | `PlayingState`, `PausedState`, `StoppedState` | Player delegates play/pause/stop to current state — no if/else chains |
+| Command | `Command` (interface) | `PlayCommand`, `PauseCommand`, `NextTrackCommand` | Decouple UI from Player; wrap each action as an object |
+| Strategy | `PlaybackStrategy`, `RecommendationStrategy` (interfaces) | `FreePlaybackStrategy`, `PremiumPlaybackStrategy`, `GenreBasedRecommendationStrategy` | Swap ad-logic and recommendation algorithm without changing Player/User |
+| Composite | `Playable` (interface) | `Song` (leaf), `Album` (composite), `Playlist` (composite) | `player.load(Playable)` works for all three — uniform `getTracks()` |
+
+---
+
+## 3. Class Responsibility Cheatsheet
+
+> **All 28 classes — one-liner each.**
+
+### Enums (2)
+| Class | Role |
 |---|---|
-| `Song` | Leaf playable unit — title, artist, duration |
-| `Album` | Composite of Songs, released by an Artist |
-| `Playlist` | User-created composite of Songs |
-| `Artist` | Subject in Observer pattern — maintains follower list and discography |
-| `User` | Observer + strategy holder — follows artists, has subscription tier |
-| `Player` | Context for State pattern — manages queue and playback state |
-| `MusicStreamingSystem` | Singleton + Facade — central access point for all subsystems |
+| `SubscriptionTier` | `FREE` or `PREMIUM` — drives strategy selection |
+| `PlayerStatus` | `PLAYING`, `PAUSED` (typo: `PLAUSED`), `STOPPED` — mirrors active state |
+
+### Model / Composite (6)
+| Class | Role |
+|---|---|
+| `Playable` *(interface)* | Contract: `getTracks() → List<Song>` — unified interface for all playable units |
+| `Song` | Leaf — wraps itself in a singleton list for `getTracks()` |
+| `Album` | Composite — ordered list of Songs released by an Artist |
+| `Playlist` | Composite — user-curated list of Songs |
+| `User` | Observer + strategy holder; built via `User.Builder`; follows artists |
+| `Player` | State-machine context; holds queue + currentIndex; delegates all actions to `PlayerState` |
+
+### Observer (3)
+| Class | Role |
+|---|---|
+| `ArtistObserver` *(interface)* | `update(artist, album)` — implemented by any follower |
+| `Subject` *(abstract)* | Manages `List<ArtistObserver>`; add/remove/notify helpers |
+| `Artist` | Extends `Subject`; `releaseAlbum()` adds to discography and fires `notifyObservers()` |
+
+### State (4)
+| Class | Role |
+|---|---|
+| `PlayerState` *(interface)* | `play(player)`, `pause(player)`, `stop(player)` |
+| `PlayingState` | play → "already playing"; pause → `PausedState`; stop → `StoppedState` |
+| `PausedState` | play → resume → `PlayingState`; pause → "already paused"; stop → `StoppedState` |
+| `StoppedState` | play → start → `PlayingState`; pause → "can't pause"; stop → "already stopped" |
+
+### Command (4)
+| Class | Role |
+|---|---|
+| `Command` *(interface)* | `execute()` |
+| `PlayCommand` | Wraps `player.clickPlay()` |
+| `PauseCommand` | Wraps `player.clickPause()` |
+| `NextTrackCommand` | Wraps `player.clickNext()` |
+
+### Strategy (5)
+| Class | Role |
+|---|---|
+| `PlaybackStrategy` *(interface)* | `play(song, player)` + static factory `getStrategy(tier, songsPlayed)` |
+| `FreePlaybackStrategy` | Tracks `songsPlayed`; inserts ad every 3rd song (`songsPlayed % 3 == 0`) |
+| `PremiumPlaybackStrategy` | Plays immediately — no tracking, no ads |
+| `RecommendationStrategy` *(interface)* | `recommend(allSongs) → List<Song>` |
+| `GenreBasedRecommendationStrategy` | Simulates: shuffle all songs, return first 5 |
+
+### Services (2)
+| Class | Role |
+|---|---|
+| `SearchService` | Stream-filters songs by title / artists by name (case-insensitive `contains`) |
+| `RecommendationService` | Holds a `RecommendationStrategy`; delegates `generateRecommendations()` to it; swappable via `setStrategy()` |
+
+### System (2)
+| Class | Role |
+|---|---|
+| `MusicStreamingSystem` | Singleton + Facade; owns `Map<id, Song/Artist/User>`, `Player`, `SearchService`, `RecommendationService` |
+| `MusicStreamingDemo` | Main — wires everything together; exercises all 7 patterns |
 
 ---
 
-## 2. System Overview
+## 4. Draw the Class Diagram in 5 Steps
 
-![](../class-diagram/musicStreamingSystemOverview.png)
+> Follow this order and you'll reconstruct the full diagram without missing a class.
 
----
+**Step 1 — Draw the 5 interfaces (your skeleton)**
+```
+Playable          PlayerState       Command
+  └─ getTracks()    └─ play/pause/stop  └─ execute()
 
-## 3. Entity Relationship Diagram
+PlaybackStrategy            RecommendationStrategy    ArtistObserver
+  └─ play(song, player)       └─ recommend(songs)       └─ update(artist, album)
+  └─ getStrategy() [factory]
+```
 
-### Relationship Legend
-- **||--||** One-to-one
-- **||--|{** One-to-many (composition — child owned by parent)
-- **||--o{** One-to-many (association — independent lifecycle)
-- **}|..|{** Implements interface
+**Step 2 — Hang concrete classes off each interface**
+```
+Playable  ◄── Song (leaf), Album (composite), Playlist (composite)
+PlayerState ◄── PlayingState, PausedState, StoppedState
+Command ◄── PlayCommand, PauseCommand, NextTrackCommand
+PlaybackStrategy ◄── FreePlaybackStrategy, PremiumPlaybackStrategy
+RecommendationStrategy ◄── GenreBasedRecommendationStrategy
+ArtistObserver ◄── User
+```
 
-![](../class-diagram/MusicSystemEntityDiagram.png)
+**Step 3 — Build the Observer chain**
+```
+Subject (abstract)
+  └─ observers: List<ArtistObserver>
+  └─ add/remove/notifyObservers()
+      ▲
+   Artist (extends Subject)
+      └─ discography: List<Album>
+      └─ releaseAlbum() → notifyObservers()
+```
 
-### Key Relationship Decisions
+**Step 4 — Build User and Player (the two stateful actors)**
+```
+User (implements ArtistObserver)
+  ├─ playbackStrategy: PlaybackStrategy  [COMPOSITION — built in User.Builder]
+  └─ followedArtists: Set<Artist>        [ASSOCIATION]
 
-| Relationship | Type | Why |
-|---|---|---|
-| `User` → `PlaybackStrategy` | **Composition** | Strategy is created for this specific user at `build()` time and cannot be shared or exist without a user. |
-| `Artist` → `ArtistObserver` list | **Association** | Observers (Users) exist independently — Artist just holds references to notify. |
-| `Player` → `PlayerState` | **Composition** | State objects are created by the Player itself during transitions; lifecycle is fully internal. |
-| `MusicStreamingSystem` → `Player/Services` | **Composition** | These are created in the constructor and cannot exist without the system. |
-| `Song` → `Artist` | **Association** | Artist exists independently on the exchange; Song just references who made it. |
-| `RecommendationService` → `RecommendationStrategy` | **Association** | Strategy can be swapped at runtime via `setStrategy()` — loosely held. |
+User.Builder (inner class)
+  └─ withSubscription(tier, songsPlayed) → PlaybackStrategy.getStrategy(...)
+  └─ build() → new User(...)
 
----
+Player
+  ├─ state: PlayerState                 [COMPOSITION — Player creates states]
+  ├─ status: PlayerStatus
+  ├─ queue: List<Song>                  [loaded from any Playable]
+  ├─ currentUser: User                  [ASSOCIATION]
+  └─ clickPlay/clickPause/clickNext() → delegates to state
+```
 
-## 4. Class Diagram
+**Step 5 — Wrap in the Facade**
+```
+MusicStreamingSystem (Singleton)
+  ├─ player: Player                     [COMPOSITION]
+  ├─ searchService: SearchService       [COMPOSITION]
+  ├─ recommendationService: RecommendationService  [COMPOSITION]
+  ├─ songs: Map<String, Song>
+  ├─ artists: Map<String, Artist>
+  └─ users: Map<String, User>
 
-> Reference image: `../class-diagram/musicstreamingservice-class-diagram.png`
+RecommendationService
+  └─ strategy: RecommendationStrategy  [ASSOCIATION — swappable via setStrategy()]
+```
 
-![](../class-diagram/musicStreamingSystemClassDiagram.png)
+> **Tip:** Composition = created inside, dies with parent. Association = created outside, passed in, independent lifecycle.
 
 ---
 
@@ -88,17 +190,14 @@ Design a **Spotify-like Music Streaming Service** where:
 
 ### 5.1 Singleton + Facade — `MusicStreamingSystem`
 
-**What it does:**
-Ensures a single music library/player instance system-wide. Also acts as a Facade by hiding `Player`, `SearchService`, and `RecommendationService` behind one clean interface.
-
-**Implementation — Double-Checked Locking:**
+**Key implementation — Double-Checked Locking:**
 ```java
-private static volatile MusicStreamingSystem instance;
+private static volatile MusicStreamingSystem instance;  // volatile = memory barrier
 
 public static MusicStreamingSystem getInstance() {
-    if (instance == null) {                          // Fast path — no lock if already created
-        synchronized (MusicStreamingSystem.class) {  // Slow path — only one thread enters
-            if (instance == null) {                  // Second check — prevents double creation
+    if (instance == null) {                         // 1. Fast path — skip lock after init
+        synchronized (MusicStreamingSystem.class) { // 2. Only one thread creates
+            if (instance == null) {                 // 3. Second check: two threads can both pass #1
                 instance = new MusicStreamingSystem();
             }
         }
@@ -107,419 +206,277 @@ public static MusicStreamingSystem getInstance() {
 }
 ```
 
-**Why `volatile`?**
-Without `volatile`, the JVM can reorder instructions — Thread A may publish the reference to `instance` BEFORE the constructor finishes. Thread B reads a non-null but half-initialized object. `volatile` creates a **memory barrier** ensuring the constructor completes before the reference is visible.
+**Why `volatile`:** Without it, JVM instruction reordering can expose a half-constructed object to another thread — `instance != null` but constructor hasn't finished.
 
-**Why Facade?**
-Clients call `system.searchSongsByTitle()` without knowing that `SearchService` exists. The subsystem complexity is hidden — callers depend only on `MusicStreamingSystem`.
+**Facade role:** `system.searchSongsByTitle()` — caller never touches `SearchService`. `system.getSongRecommendations()` — caller never touches `RecommendationService`. One interface, all subsystems hidden.
 
-**Known Bug:**
-```java
-// Constructor is public — anyone can bypass the Singleton:
-MusicStreamingSystem system1 = new MusicStreamingSystem(); // separate library
-MusicStreamingSystem system2 = new MusicStreamingSystem(); // another separate library
-// Alice's music is in system1, Bob's in system2 — no shared catalog
-
-// Fix: make constructor private
-private MusicStreamingSystem() { ... }
-```
-
-**Without Singleton + Facade:**
-```java
-// Every caller creates their own separate music system
-MusicStreamingSystem s1 = new MusicStreamingSystem(); // its own player, songs, users
-MusicStreamingSystem s2 = new MusicStreamingSystem(); // completely separate system
-// Songs added to s1 are invisible to s2 — broken shared catalog
-```
+**Bug:** Constructor is `public` → anyone can call `new MusicStreamingSystem()` and get a separate catalog. Fix: `private MusicStreamingSystem() {}`
 
 ---
 
-### 5.2 Builder Pattern — `User.Builder`
+### 5.2 Builder — `User.Builder`
 
-**What it does:**
-Constructs a `User` with a readable, named parameter chain. Injects the correct `PlaybackStrategy` at build time based on the subscription tier.
-
-**Implementation highlights:**
 ```java
-User freeUser = new User.Builder("Alice")
-    .withSubscription(SubscriptionTier.FREE, 0)   // sets strategy at build time
-    .build();
-
-User premiumUser = new User.Builder("Bob")
-    .withSubscription(SubscriptionTier.PREMIUM, 0)
-    .build();
+User alice = new User.Builder("Alice")
+    .withSubscription(SubscriptionTier.FREE, 0)   // → FreePlaybackStrategy(0)
+    .build();                                       // → new User(id, name, strategy)
 ```
 
-**Key design decision — strategy created in `withSubscription()`, not later:**
-`withSubscription()` calls `PlaybackStrategy.getStrategy(tier, songsPlayed)` immediately. By the time `build()` is called, the strategy is already set. This prevents a User existing without a playback strategy.
+**Why:** User needs 3+ fields (id, name, strategy). Strategy depends on both `tier` AND `songsPlayed` — a single constructor call can't express this cleanly. Builder names each concern explicitly.
 
-**Without Builder:**
-```java
-// Positional constructor — which arg is the name? which is the strategy?
-new User("uuid", "Alice", freePlaybackStrategy);
-// If someone calls: new User("uuid", freePlaybackStrategy, "Alice") — compiles, silently broken
-```
+**Key insight:** `withSubscription()` calls `PlaybackStrategy.getStrategy(tier, songsPlayed)` immediately. Strategy is set before `build()` — User can never be created without a strategy.
 
 ---
 
-### 5.3 Observer Pattern — `Artist` / `User` / `ArtistObserver`
+### 5.3 Observer — `Artist` / `Subject` / `User`
 
-**What it does:**
-When an Artist releases a new Album, all following Users are automatically notified. Artists don't need to know about Users at all — they just notify their observer list.
+```
+Artist.releaseAlbum(album)
+  ├─ discography.add(album)
+  └─ notifyObservers(this, album)
+       └─ for each observer: observer.update(artist, album)
+                                 └─ User.update() → print "[Notification for Bob]..."
+```
 
-**Three participants:**
-- **Subject** (abstract class): manages the `observers` list — `addObserver`, `removeObserver`, `notifyObservers`
-- **Artist** (Concrete Subject): extends `Subject`, calls `notifyObservers(this, album)` in `releaseAlbum()`
-- **User** (Concrete Observer): implements `ArtistObserver`, prints notification in `update()`
-
-**The `followArtist()` method does two things atomically:**
+**`followArtist()` does TWO things — both required:**
 ```java
 public void followArtist(Artist artist) {
-    followedArtists.add(artist);    // track who the user follows (for user's reference)
-    artist.addObserver(this);       // register user as observer on the artist (for notification)
+    followedArtists.add(artist);   // User tracks who they follow
+    artist.addObserver(this);      // Artist knows to notify this user
 }
+// Miss the second line → user follows but NEVER gets notifications
+// Miss the first line  → user gets notifications but can't list followed artists
 ```
-Both must happen together. Adding to `followedArtists` without `addObserver` = user tracks follow but never receives notifications. Calling `addObserver` without tracking = notifications arrive but user can't list who they follow.
 
-**Without Observer Pattern:**
-```java
-// Artist.releaseAlbum() would need to know about User:
-public void releaseAlbum(Album album) {
-    // Tightly coupled: Artist must query the user database
-    for (User user : UserDatabase.getAllUsers()) {
-        if (user.getFollowedArtists().contains(this)) {
-            user.sendNotification("New album released: " + album.getTitle());
-        }
-    }
-}
-// Adding a new notification target (e.g., PodcastListener) requires editing Artist
-```
+**Without Observer:** `Artist.releaseAlbum()` would query the user database directly — coupling Artist to User, requiring a database scan on every release.
 
 ---
 
-### 5.4 State Pattern — `Player`
+### 5.4 State — `Player`
 
-**What it does:**
-Encapsulates player lifecycle behavior. Each state class knows exactly what's legal from that state — no `if/else` chains in `Player`.
+**State transition table (memorize this grid):**
 
-**States and transitions:**
+| Action | `StoppedState` | `PlayingState` | `PausedState` |
+|---|---|---|---|
+| `clickPlay()` | → `PlayingState` ✓ | "already playing" ✗ | → `PlayingState` (resume) ✓ |
+| `clickPause()` | "can't pause" ✗ | → `PausedState` ✓ | "already paused" ✗ |
+| `clickStop()` | "already stopped" ✗ | → `StoppedState` ✓ | → `StoppedState` ✓ |
+| `clickNext()` | N/A | → next song or `StoppedState` | N/A |
 
-![](../class-diagram/musicStreamingSystemStateDiagram.png)
-
-**How delegation works:**
+**How delegation works — zero if/else in Player:**
 ```java
-// Player delegates to its current state — zero if/else:
-public void clickPlay() {
-    state.play(this);   // StoppedState.play() → transitions to PlayingState
-}                       // PlayingState.play() → prints "already playing"
-                        // PausedState.play()  → transitions to PlayingState
+public void clickPause() {
+    state.pause(this);  // PlayingState.pause() → changeState(new PausedState())
+}                       // PausedState.pause()  → "already paused" (no-op)
+                        // StoppedState.pause() → "can't pause" (refuses)
 ```
 
-**Known Bug:**
-```java
-// PlayerStatus.java has a typo:
-public enum PlayerStatus {
-    PLAUSED,  // ← Should be PAUSED
-    STOPPED,
-    PLAYING
-}
-```
-
-**Without State Pattern:**
-```java
-// Player.clickPlay() becomes an if/else mess:
-public void clickPlay() {
-    if (status == STOPPED) {
-        status = PLAYING;
-        // ... start playback
-    } else if (status == PAUSED) {
-        status = PLAYING;
-        // ... resume playback
-    } else if (status == PLAYING) {
-        System.out.println("already playing");
-    }
-    // Every new status = new branch in EVERY method (clickPlay, clickPause, clickStop, clickNext)
-}
-```
+**Without State:** `clickPlay()` needs `if (status == STOPPED) {...} else if (status == PAUSED) {...} else if (status == PLAYING) {...}` — every method, every new status = missed branches = silent bugs.
 
 ---
 
-### 5.5 Command Pattern — `PlayCommand`, `PauseCommand`, `NextTrackCommand`
-
-**What it does:**
-Wraps a player operation as a first-class object. Decouples the caller (e.g. a UI button click) from the `Player` object. Enables passing commands around, storing them, or executing them on a schedule.
-
-**Three participants:**
-- **Command** (interface): `execute()`
-- **Concrete Commands**: hold a reference to `Player`, delegate to its methods
-- **Client** (Demo): creates and executes commands
+### 5.5 Command — `PlayCommand`, `PauseCommand`, `NextTrackCommand`
 
 ```java
-PlayCommand play         = new PlayCommand(player);
-PauseCommand pause       = new PauseCommand(player);
-NextTrackCommand next    = new NextTrackCommand(player);
-
-play.execute();   // → player.clickPlay()
-next.execute();   // → player.clickNext()
-pause.execute();  // → player.clickPause()
+Command play = new PlayCommand(player);   // created by UI / client
+play.execute();                           // → player.clickPlay()
 ```
 
-**Note vs Stock Broker implementation:**
-This implementation has NO `Invoker` class (unlike `OrderInvoker` in the stock broker). Commands are created and executed directly by the demo. For production use, an `Invoker` would provide queuing, audit logging, and undo support.
+All three commands are thin wrappers. They store a `Player` reference and delegate in `execute()`. No Invoker class in this implementation (unlike Stock Broker system — no queuing or undo here).
 
-**Without Command Pattern:**
-```java
-// UI code directly couples to Player internals:
-button.setOnClick(() -> player.clickPlay());
-// Cannot queue: no way to "schedule this play for later"
-// Cannot audit: no record of what was pressed and when
-// Cannot undo: no handle to reverse the operation
-```
+**Without Command:** UI directly calls `player.clickPlay()` — no interception point for queuing, scheduling, or undo support later.
 
 ---
 
-### 5.6 Strategy Pattern — `PlaybackStrategy` + `RecommendationStrategy`
+### 5.6 Strategy — `PlaybackStrategy` + `RecommendationStrategy`
 
-**What it does:**
-Encapsulates algorithms (playback behavior, recommendation logic) and makes them interchangeable at runtime without changing `Player` or `User`.
-
-#### PlaybackStrategy
-
-**Two concrete strategies:**
-
-```
-FreePlaybackStrategy
-  - Tracks songsPlayed count
-  - Every 3rd song: prints advertisement first, then plays
-  - songsPlayed++ after each play
-
-PremiumPlaybackStrategy
-  - Plays immediately — no ad, no tracking
-```
-
-**Simple Factory embedded in the Strategy interface:**
+**PlaybackStrategy — ads every 3 songs:**
 ```java
-// PlaybackStrategy.java — static factory method on the interface itself
+// FreePlaybackStrategy.play():
+if (songsPlayed > 0 && songsPlayed % SONGS_BEFORE_AD == 0) {  // SONGS_BEFORE_AD = 3
+    System.out.println(">>> Advertisement <<<");
+}
+player.setCurrentSong(song);
+songsPlayed++;
+
+// PremiumPlaybackStrategy.play():
+player.setCurrentSong(song);  // that's it — no tracking, no ads
+```
+
+**Simple Factory embedded in the interface:**
+```java
+// PlaybackStrategy.java — static method on the interface itself
 static PlaybackStrategy getStrategy(SubscriptionTier tier, int songsPlayed) {
-    return tier == SubscriptionTier.PREMIUM
-        ? new PremiumPlaybackStrategy()
-        : new FreePlaybackStrategy(songsPlayed);
+    return tier == PREMIUM ? new PremiumPlaybackStrategy()
+                           : new FreePlaybackStrategy(songsPlayed);
 }
 ```
-This keeps strategy selection in one place — `User.Builder.withSubscription()` calls this without needing to know the concrete class names.
+This is a **Simple Factory disguised as a static interface method** — creation logic lives with the abstraction, not scattered in callers.
 
-#### RecommendationStrategy
-
-- `RecommendationService` holds a `RecommendationStrategy` and allows runtime swap via `setStrategy()`
-- `GenreBasedRecommendationStrategy` currently simulates via random shuffle + limit(5) — designed to be replaced with a real ML-based strategy
-
-**Without Strategy Pattern:**
+**RecommendationService is Strategy-swappable at runtime:**
 ```java
-// Player.playCurrentSongInQueue() would have subscription logic baked in:
-if (currentUser.getTier() == FREE) {
-    if (songsPlayed % 3 == 0) { System.out.println("Advertisement!"); }
-    // ...
-} else if (currentUser.getTier() == PREMIUM) {
-    // ...
-}
-// Adding a new tier (STUDENT, FAMILY) = modifying Player — violates Open/Closed Principle
+service.setStrategy(new CollaborativeFilteringStrategy()); // swap without touching callers
 ```
 
 ---
 
-### 5.7 Composite Pattern — `Playable`
+### 5.7 Composite — `Playable`
 
-**What it does:**
-Allows `Player.load()` to accept a `Song`, an `Album`, or a `Playlist` uniformly — the Player doesn't need to know which type it received.
-
-**Interface:**
 ```java
-public interface Playable {
-    List<Song> getTracks();  // Every Playable can produce a list of Songs
+// Leaf:
+class Song implements Playable {
+    public List<Song> getTracks() { return Collections.singletonList(this); }
 }
-```
 
-**Three implementations:**
+// Composite (same interface):
+class Album implements Playable {
+    public List<Song> getTracks() { return List.copyOf(tracks); }
+}
 
-| Class | Type | `getTracks()` returns |
-|---|---|---|
-| `Song` | Leaf | `Collections.singletonList(this)` — just itself |
-| `Album` | Composite | `List.copyOf(tracks)` — all album tracks |
-| `Playlist` | Composite | `List.copyOf(tracks)` — all playlist tracks |
-
-**Player usage:**
-```java
+// Player doesn't care which type:
 public void load(Playable playable, User user) {
-    this.queue = playable.getTracks();  // Works for Song, Album, or Playlist identically
-    this.currentIndex = 0;
+    this.queue = playable.getTracks();  // works for Song, Album, Playlist identically
 }
 ```
 
-**Known Bug in Album.java:**
-```java
-// Bug: tracks field is declared but NEVER initialized
-private List<Song> tracks;        // ← null!
+**Bug:** `Album.tracks` is declared as `private List<Song> tracks;` — never initialized. Calling `album.addTrack(song)` throws `NullPointerException`. Fix: `= new ArrayList<>()`.
 
-public void addTrack(Song song) {
-    tracks.add(song);             // ← NullPointerException at runtime
-}
-
-// Fix:
-private List<Song> tracks = new ArrayList<>();
-```
-
-**Without Composite Pattern:**
-```java
-// Player would need type-specific overloads:
-public void load(Song song, User user) { queue = List.of(song); }
-public void load(Album album, User user) { queue = album.getTracks(); }
-public void load(Playlist playlist, User user) { queue = playlist.getTracks(); }
-// Adding a new playable type (Radio, Podcast) = editing Player — violates Open/Closed Principle
-```
+**Without Composite:** `Player` needs `load(Song)`, `load(Album)`, `load(Playlist)` — every new playable type (podcast, radio) adds an overload to `Player`.
 
 ---
 
-## 6. Concurrency Strategy
+## 6. Key Flows — Sequence Diagrams
 
-### 6.1 What the Current Implementation Does
-
-The implementation is **single-threaded demo scope**. The only thread-safety mechanism present is the **Singleton double-checked locking** in `MusicStreamingSystem`.
-
-| Component | Mechanism | Scope |
-|---|---|---|
-| `MusicStreamingSystem.instance` | `volatile` + `synchronized` (DCL) | Prevents half-initialized Singleton |
-| `Artist.discography` | `List.copyOf()` on read | Defensive copy — but ArrayList itself isn't thread-safe for writes |
-| `Album.getTracks()` | `List.copyOf()` on read | Defensive copy |
-| `Playlist.getTracks()` | `List.copyOf()` on read | Defensive copy |
-
-### 6.2 What Would Break Under Concurrent Load
+### Flow 1: Follow Artist → Release Album → Get Notified
 
 ```mermaid
-flowchart TD
-    A["Thread A: system.addSong()"] --> M["songs HashMap\nNOT thread-safe"]
-    B["Thread B: system.searchSongsByTitle()"] --> M
-    M --> CORRUPT["Data corruption or ConcurrentModificationException"]
+sequenceDiagram
+    actor Bob
+    participant Artist
+    participant Subject
 
-    C["Thread A: user1.followArtist(artist)"] --> OL["Subject.observers ArrayList\nNOT thread-safe"]
-    D["Thread B: artist.releaseAlbum()"] --> OL
-    OL --> MISS["Missed notification or ConcurrentModificationException"]
+    Bob->>Artist: followArtist(daftPunk)
+    Artist->>Subject: addObserver(Bob)
 
-    E["Multiple users sharing one Player"] --> P["Player queue/index\nNOT thread-safe"]
-    P --> WRONG["Wrong song plays for wrong user"]
+    Note over Artist: releaseAlbum(discovery)
+    Artist->>Artist: discography.add(discovery)
+    Artist->>Subject: notifyObservers(daftPunk, discovery)
+    Subject->>Bob: update(daftPunk, discovery)
+    Bob->>Bob: print "[Notification for Bob]..."
 ```
 
-### 6.3 Production Fixes Required
+---
 
-| Component | Problem | Fix |
+### Flow 2: Free User — Ad Injection Every 3 Songs
+
+```mermaid
+sequenceDiagram
+    actor Demo
+    participant Player
+    participant FreeStrategy as FreePlaybackStrategy
+
+    Demo->>Player: load(album, freeUser) → queue=[s1,s2,s3,s4]
+    Demo->>Player: clickPlay() [song 1]
+    Player->>FreeStrategy: play(s1, player)
+    FreeStrategy->>FreeStrategy: songsPlayed=0 → 0%3==0 → print AD
+    FreeStrategy->>FreeStrategy: songsPlayed++ → 1
+
+    Demo->>Player: clickNext() [song 2]
+    Player->>FreeStrategy: play(s2, player)
+    FreeStrategy->>FreeStrategy: 1%3 ≠ 0 → no ad, songsPlayed++ → 2
+
+    Demo->>Player: clickNext() [song 3]
+    Player->>FreeStrategy: play(s3, player)
+    FreeStrategy->>FreeStrategy: 2%3 ≠ 0 → no ad, songsPlayed++ → 3
+
+    Demo->>Player: clickNext() [song 4]
+    Player->>FreeStrategy: play(s4, player)
+    FreeStrategy->>FreeStrategy: 3%3==0 → print AD again
+    FreeStrategy->>FreeStrategy: songsPlayed++ → 4
+```
+
+---
+
+## 7. Player State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Stopped
+
+    Stopped --> Playing   : clickPlay()
+    Playing --> Paused    : clickPause()
+    Playing --> Stopped   : clickStop() / end of queue
+    Playing --> Playing   : clickNext() [more tracks]
+    Paused  --> Playing   : clickPlay() — resume
+    Paused  --> Stopped   : clickStop()
+
+    Stopped : refuses clickPause → "Can't pause"
+    Playing : refuses clickPlay  → "Already playing"
+    Paused  : refuses clickPause → "Already paused"
+```
+
+---
+
+## 8. Concurrency & Known Bugs
+
+### Concurrency: What's Thread-Safe vs What Isn't
+
+| Component | Thread-Safe? | Why / Fix |
 |---|---|---|
-| `songs`, `artists`, `users` maps | `HashMap` — not thread-safe for concurrent read/write | `ConcurrentHashMap` |
-| `Subject.observers` | `ArrayList` — not thread-safe for concurrent follow + notify | `CopyOnWriteArrayList` |
-| `Player` | Single shared instance for all users | Per-user `Player` instances (move Player into User) |
-| `MusicStreamingSystem()` constructor | `public` — bypasses Singleton | Make `private` |
-| `FreePlaybackStrategy.songsPlayed` | Not thread-safe counter | `AtomicInteger` |
+| `MusicStreamingSystem.instance` | ✅ | `volatile` + DCL |
+| `Album/Playlist/Artist` getters | ✅ (reads) | `List.copyOf()` defensive copy |
+| `songs/artists/users` `HashMap` | ❌ | Concurrent reads+writes corrupt map → use `ConcurrentHashMap` |
+| `Subject.observers` `ArrayList` | ❌ | Concurrent follow + notify → `ConcurrentModificationException` → use `CopyOnWriteArrayList` |
+| `Player` (single shared instance) | ❌ | Multiple users sharing one player → wrong song for wrong user → make per-user |
+| `FreePlaybackStrategy.songsPlayed` | ❌ | `int` not atomic → use `AtomicInteger` |
+| `MusicStreamingSystem()` constructor | ❌ (design) | `public` → bypass Singleton → make `private` |
 
-### 6.4 How Singleton DCL Works (the one real concurrency mechanism)
+### Known Bugs (3)
 
-```java
-private static volatile MusicStreamingSystem instance;
-
-// Thread A and Thread B both call getInstance() simultaneously:
-
-// STEP 1: Both threads check: instance == null → true (first time)
-// STEP 2: Both try to enter synchronized block — only ONE gets the lock
-// STEP 3: Winner creates instance, sets it, releases lock
-// STEP 4: Loser acquires lock, checks AGAIN: instance != null → returns existing
-// volatile ensures: winner's write is visible to loser IMMEDIATELY (no stale cache)
-```
-
----
-
-## 7. Sequence Diagrams — Key Flows
-
-### Flow 1: User Follows Artist → Artist Releases Album → User Gets Notified
-
-![](../class-diagram/artistReleaseAlbumSequence.png)
-
----
-
-### Flow 2: Free User Playback — Ad After Every 3 Songs
-
-![](../class-diagram/freePlaybackWithAdSequence.png)
-
----
-
-### Flow 3: Search and Recommendations
-
-![](../class-diagram/SearchRecommendationSequence.png)
-
----
-
-## 8. Application Flow
-
-### Player State Machine
-
-![](../class-diagram/playerStateMachine.png)
-
----
-
-### Subscription Tier Decision Flow
-
-![](../class-diagram/subcriptionTierDecisionFlow.png)
-
----
-
-### Composite Playable Resolution Flow
-
-![](../class-diagram/compositePlayableResolutionFlow.png)
+| # | Bug | File | Symptom | Fix |
+|---|---|---|---|---|
+| 1 | `tracks` not initialized | `Album.java:7` | `NullPointerException` on first `addTrack()` | `private List<Song> tracks = new ArrayList<>()` |
+| 2 | Typo `PLAUSED` | `PlayerStatus.java:3` | Enum value mismatch with `PAUSED` logic | Rename to `PAUSED` |
+| 3 | Public constructor | `MusicStreamingSystem.java` | Singleton can be bypassed with `new` | `private MusicStreamingSystem()` |
 
 ---
 
 ## 9. Quick Revision Cheatsheet
 
-### Design Patterns at a Glance
+### All 7 Patterns at a Glance
 
-| Pattern | Class(es) | Problem Solved | Without It |
-|---|---|---|---|
-| **Singleton** | `MusicStreamingSystem` | One shared music library across JVM | Multiple disconnected catalogs — searches and plays don't share data |
-| **Facade** | `MusicStreamingSystem` | Single entry point hiding Player, SearchService, RecommendationService | Clients directly couple to subsystems — brittle and hard to refactor |
-| **Builder** | `User.Builder` | Safe, readable User construction with strategy injection | Positional constructor — swap name/tier, wrong strategy assigned silently |
-| **Observer** | `Artist`, `Subject`, `User`, `ArtistObserver` | Push album release notifications to followers | Artist must query User database — tight coupling, polling required |
-| **State** | `Player`, `PlayingState`, `PausedState`, `StoppedState` | State-specific behavior without if/else chains | Every clickPlay/clickPause needs if/else for all statuses — missed cases |
-| **Command** | `PlayCommand`, `PauseCommand`, `NextTrackCommand` | Decouple UI from Player; enable queuing and future undo | UI couples directly to Player — can't queue, audit, or undo operations |
-| **Strategy** | `PlaybackStrategy`, `FreePlaybackStrategy`, `PremiumPlaybackStrategy`, `RecommendationStrategy` | Swap playback/recommendation algorithm per user at runtime | Ad logic and tier checks baked into Player — adding new tier breaks Player |
-| **Composite** | `Playable`, `Song`, `Album`, `Playlist` | Player treats Song/Album/Playlist uniformly | Separate `load(Song)`, `load(Album)`, `load(Playlist)` overloads in Player |
-
----
-
-### Known Bugs
-
-| Bug | Location | Effect | Fix |
-|---|---|---|---|
-| `tracks` field not initialized | `Album.java:7` | `NullPointerException` on `addTrack()` | `private List<Song> tracks = new ArrayList<>()` |
-| `PLAUSED` typo | `PlayerStatus.java:3` | Wrong enum name used throughout Player states | Rename to `PAUSED` |
-| Constructor is `public` | `MusicStreamingSystem.java` | Anyone can bypass `getInstance()` and create a separate system | Make constructor `private` |
-
----
-
-### Extensibility Hooks
-
-| To add... | Where to add | Existing code changes |
+| Pattern | Class(es) | Without It |
 |---|---|---|
-| New subscription tier (STUDENT, FAMILY) | New class implementing `PlaybackStrategy` | Only `PlaybackStrategy.getStrategy()` needs a new branch |
-| New recommendation algorithm | New class implementing `RecommendationStrategy` | Call `recommendationService.setStrategy(newStrategy)` — nothing else |
-| New player state (BUFFERING, ERROR) | New class implementing `PlayerState` | Only the triggering states need to `changeState(new BufferingState())` |
-| New player command (SeekCommand, ShuffleCommand) | New class implementing `Command` | Nothing — just create and call `execute()` |
-| New playable type (Podcast, Radio) | New class implementing `Playable` | Nothing — `Player.load()` already accepts any `Playable` |
+| **Singleton + Facade** | `MusicStreamingSystem` | Multiple disconnected catalogs; callers know subsystem internals |
+| **Builder** | `User.Builder` | Positional constructor — silently wrong strategy assignment |
+| **Observer** | `Artist`, `Subject`, `User` | Artist queries user DB on release — tight coupling |
+| **State** | `Player`, 3 State classes | `if/else` explosion in every Player method |
+| **Command** | 3 Command classes | UI tightly coupled to Player — no future queue/undo |
+| **Strategy** | `FreePlaybackStrategy`, `PremiumPlaybackStrategy`, `GenreBasedRecommendationStrategy` | Ad logic baked into Player — new tier = edit Player |
+| **Composite** | `Song`, `Album`, `Playlist` | `player.load()` needs 3 overloads; new types break Player |
 
----
+### Extensibility — Where to Add New Stuff
 
-### Scalability Considerations (Production Gaps in This Implementation)
-
-| Concern | Current State | Production Solution |
+| Feature | Add This | Touch Nothing Else |
 |---|---|---|
-| Concurrent catalog reads/writes | `HashMap` (not thread-safe) | `ConcurrentHashMap` |
-| Concurrent observer registration + notification | `ArrayList` (not thread-safe) | `CopyOnWriteArrayList` |
-| Multiple users sharing one Player | Single Player in system | Per-user Player (move into User or session) |
-| Recommendation for large catalogs | Full catalog shuffle in memory | Streaming/pagination + distributed cache (Redis) |
-| Search on large catalog | Linear stream filter O(n) | Inverted index (Elasticsearch) |
-| Song storage | In-memory `HashMap` | Distributed database + CDN for audio files |
+| New subscription tier (STUDENT) | New `PlaybackStrategy` subclass + branch in `getStrategy()` | Player, User, Demo untouched |
+| New recommendation algorithm | New `RecommendationStrategy` subclass | Call `service.setStrategy(new Algo())` |
+| New player state (BUFFERING) | New `PlayerState` subclass | Only triggering states call `changeState(new BufferingState())` |
+| New player action (Seek, Shuffle) | New `Command` subclass | Nothing — create and `execute()` |
+| New playable type (Podcast, Radio) | Implement `Playable` | `Player.load()` already handles it |
+
+### How to Answer "How Does the System Work?" in 30 Seconds
+
+```
+MusicStreamingSystem (Singleton) ← one global entry point
+  │
+  ├─ User (Builder) ← knows tier → gets PlaybackStrategy (Strategy)
+  │    └─ follows Artist (Observer) ← notified on album release
+  │
+  ├─ Player (State: Playing/Paused/Stopped)
+  │    ├─ load(Playable) ← Song / Album / Playlist all work (Composite)
+  │    └─ commanded by PlayCommand / PauseCommand / NextTrackCommand (Command)
+  │
+  ├─ SearchService ← stream filter on in-memory maps
+  └─ RecommendationService ← delegates to RecommendationStrategy (Strategy)
+```
