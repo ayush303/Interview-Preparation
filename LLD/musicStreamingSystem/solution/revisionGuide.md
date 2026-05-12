@@ -350,80 +350,11 @@ public void load(Playable playable, User user) {
 
 > **The full `MusicStreamingDemo.main()` call chain — every method, in order, across all 6 phases.**
 
-### 6.1 Master Application Flowchart
-
-```mermaid
-flowchart TD
-    START(["MusicStreamingDemo.main()"])
-
-    subgraph SETUP ["PHASE 1 — Setup & Registration"]
-        direction TB
-        S1["MusicStreamingSystem.getInstance()\n→ double-checked lock\n→ new Player, SearchService,\n   RecommendationService"]
-        S2["new Artist('Daft Punk')\nsystem.addArtist(daftPunk)\n→ artists.put(id, daftPunk)"]
-        S3["system.addSong('s1','One More Time',...) ×4\n→ new Song(id, title, artist, dur)\n→ songs.put(id, song)"]
-        S4["album.addTrack(s1)\nalbum.addTrack(s2)\nalbum.addTrack(s3)\nalbum.addTrack(s4)"]
-        S5["User.Builder('Alice')\n.withSubscription(FREE, 0)\n→ PlaybackStrategy.getStrategy(FREE,0)\n→ new FreePlaybackStrategy(0)\n.build() → alice"]
-        S6["User.Builder('Bob')\n.withSubscription(PREMIUM, 0)\n→ PlaybackStrategy.getStrategy(PREMIUM,0)\n→ new PremiumPlaybackStrategy()\n.build() → bob"]
-        S7["system.registerUser(alice)\nsystem.registerUser(bob)\n→ users.put(id, user)"]
-        S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7
-    end
-
-    subgraph OBS ["PHASE 2 — Observer: Follow & Album Release"]
-        direction TB
-        O1["bob.followArtist(daftPunk)\n→ followedArtists.add(daftPunk)\n→ daftPunk.addObserver(bob)\n   Subject.observers.add(bob)"]
-        O2["daftPunk.releaseAlbum(discovery)\n→ discography.add(discovery)\n→ notifyObservers(daftPunk, discovery)\n→ Subject loops observers\n→ bob.update() → print notification"]
-        O1 --> O2
-    end
-
-    subgraph FREE_PHASE ["PHASE 3 — Command + State + Strategy  (Free User Alice)"]
-        direction TB
-        F1["player.load(album, alice)\n→ queue = album.getTracks()  Composite\n→ queue=[s1,s2,s3,s4], index=0\n→ state = new StoppedState()"]
-        F2["new PlayCommand(player).execute()\n→ player.clickPlay()\n→ StoppedState.play(player)\n→ changeState(new PlayingState())\n→ playCurrentSongInQueue()  intended\n→ FreePS.play(s1,player)\n→ songsPlayed=0, 0 bigger than 0 is false, no AD\n→ setCurrentSong(s1), songsPlayed=1"]
-        F3["new NextTrackCommand(player).execute()\n→ player.clickNext()\n→ index++ to 1, playCurrentSongInQueue()\n→ FreePS.play(s2,player)\n→ 1 bigger than 0 and 1 mod 3 not 0, no AD\n→ setCurrentSong(s2), songsPlayed=2"]
-        F4["new PauseCommand(player).execute()\n→ player.clickPause()\n→ PlayingState.pause(player)\n→ changeState(new PausedState())\n→ setStatus(PAUSED)"]
-        F5["new PlayCommand(player).execute()\n→ player.clickPlay()\n→ PausedState.play(player)\n→ print 'Resuming'\n→ changeState(new PlayingState())\n→ setStatus(PLAYING)\n   no song replay, state change only"]
-        F6["NextTrackCommand.execute() for s3\n→ index++ to 2, playCurrentSongInQueue()\n→ FreePS.play(s3): 2 mod 3 not 0, no AD\n→ songsPlayed=3"]
-        F7["NextTrackCommand.execute() for s4\n→ index++ to 3, playCurrentSongInQueue()\n→ FreePS.play(s4)\n→ 3 bigger than 0 and 3 mod 3 equals 0\n→ AD plays, then song, songsPlayed=4"]
-        F1 --> F2 --> F3 --> F4 --> F5 --> F6 --> F7
-    end
-
-    subgraph PREM_PHASE ["PHASE 4 — Premium User Bob  (No Ads)"]
-        direction TB
-        P1["player.load(album, bob)\n→ queue=[s1..s4], currentUser=bob\n→ state = new StoppedState()"]
-        P2["PlayCommand.execute()\n→ StoppedState.play() → PlayingState\n→ PremiumPS.play(s1,player)\n→ setCurrentSong(s1), no AD, no tracking"]
-        P3["NextTrackCommand.execute()\n→ index++ to 1\n→ PremiumPS.play(s2): just plays"]
-        P1 --> P2 --> P3
-    end
-
-    subgraph COMP_PHASE ["PHASE 5 — Composite: Playlist"]
-        direction TB
-        C1["new Playlist('My Awesome Mix')\nplaylist.addTrack(s3)\nplaylist.addTrack(s1)"]
-        C2["player.load(playlist, bob)\n→ playlist.getTracks() = [s3,s1]\n→ queue=[s3,s1], index=0"]
-        C3["PlayCommand → PremiumPS.play(s3)\nNextTrackCommand → PremiumPS.play(s1)"]
-        C1 --> C2 --> C3
-    end
-
-    subgraph SEARCH_PHASE ["PHASE 6 — Search & Recommendation"]
-        direction TB
-        SR1["system.searchSongsByTitle('love')\n→ searchService.searchSongsByTitle()\n→ stream().filter(title.contains('love'))\n→ returns [Digital Love]"]
-        SR2["system.getSongRecommendations()\n→ recommendationService.generateRecommendations()\n→ GenreBasedStrategy.recommend(allSongs)\n→ Collections.shuffle + stream().limit(5)\n→ returns 5 random songs"]
-        SR1 --> SR2
-    end
-
-    START --> S1
-    S7 --> O1
-    O2 --> F1
-    F7 --> P1
-    P3 --> C1
-    C3 --> SR1
-    SR2 --> DONE(["END"])
-```
-
 > **Note on Phase 3:** `StoppedState.play()` in the actual code does **not** call `playCurrentSongInQueue()` — this is a bug. The flowchart shows the **intended** behavior. `PausedState.play()` correctly skips `playCurrentSongInQueue()` — resume just unpauses, it does not restart the song.
 
 ---
 
-### 6.2 Master Sequence Diagram — All 6 Phases End to End
+### 6.1 Master Sequence Diagram — All 6 Phases End to End
 
 > All participants, all classes, in execution order from `main()` to end.
 
@@ -574,7 +505,7 @@ sequenceDiagram
 
 ---
 
-### 6.3 Detailed Sequence — Phase 3: Command → State → Strategy (Free User)
+### 6.2 Detailed Sequence — Phase 3: Command → State → Strategy (Free User)
 
 > Every single method call shown in exact order.
 
