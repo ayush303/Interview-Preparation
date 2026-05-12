@@ -510,77 +510,7 @@ ORDER LIFECYCLE
 > **The full `StockBrokerageSystemDemo.main()` call chain — every method, in order, across all 6 tests.**
 > Participants: `StockBrokerageSystem` (Facade) · `StockExchange` · `OrderBuilder` · `BuyStockCommand` / `SellStockCommand` · `OrderInvoker` · `Account` · `OrderState`
 
-### 9.1 Master Application Flowchart
-
-```mermaid
-flowchart TD
-    START(["StockBrokerageSystemDemo.main()"])
-
-    subgraph SETUP ["SETUP — Initialization & Registration"]
-        direction TB
-        S1["StockBrokerageSystem.getInstance()\n→ DCL Singleton\n→ StockExchange.getInstance() [inner DCL]\n→ new ConcurrentHashMap for\n   userInvokers, listedStocks, registeredUsers"]
-        S2["system.listStock(new Stock('INFY', 1500))\nlistStock(new Stock('TCS', 3500))\n→ listedStocks.put(symbol, stock)"]
-        S3["new User('Alice', 200000)\nnew User('Bob', 100000)\nnew User('Charlie', 50000)\nnew User('PoorGuy', 500)"]
-        S4["system.registerUser(alice..poorGuy)\n→ registeredUsers.put(userId, user)\n→ new OrderInvoker() per user\n→ userInvokers.put(userId, invoker)"]
-        S5["bob.getAccount().addStock('INFY', 200)\ncharlie.getAccount().addStock('INFY', 50)\n[give sellers stock to sell]"]
-        S1-->S2-->S3-->S4-->S5
-    end
-
-    subgraph T1 ["TEST 1 — Basic Limit Match (Alice buys 50 INFY @ 1500, Bob sells 50 INFY @ 1490)"]
-        direction TB
-        T1A["system.placeBuyOrder(alice, infy, 50, 1500, LIMIT)\n→ validateUserAndStock()\n→ OrderBuilder.forUser(alice).withStock(infy)\n   .buy(50).withLimit(1500).build()\n→ new LimitOrderStrategy(BUY) in build()\n→ new Order(alice, infy, BUY, LIMIT, 1500, 50, strategy)\n   state=OpenState, status=OPEN\n→ new BuyStockCommand(aliceAccount, order)\n→ AliceInvoker.submit(cmd) → pendingCommands.offer()\n→ AliceInvoker.executeNext()\n   → cmd.execute(): balance=200000 >= 50x1500=75000 OK\n   → StockExchange.placeBuyOrder(order)\n      → validate balance OK\n      → lock('INFY')\n      → buyBook.offer(order) [MAX-HEAP, O(log n)]\n      → matchOrders: sellBook empty → no match\n      → unlock()\n   → executedCommands.push(cmd), recordAudit('EXECUTED')"]
-        T1B["system.placeSellOrder(bob, infy, 50, 1490, LIMIT)\n→ OrderBuilder...sell(50).withLimit(1490).build()\n→ new SellStockCommand(bobAccount, order)\n→ BobInvoker.submit → executeNext()\n   → cmd.execute(): hasSufficientStock(INFY,50)? Yes\n   → StockExchange.placeSellOrder(order)\n      → validate holdings OK\n      → lock('INFY')\n      → sellBook.offer(order) [MIN-HEAP, O(log n)]\n      → matchOrders('INFY', infy)\n         → drainCancelled(buyBook), drainCancelled(sellBook)\n         → bestBuy.effectivePrice=1500\n           bestSell.effectivePrice=1490\n           1500 >= 1490 → MATCH\n         → determineTradePrice: LIMIT/LIMIT → sellPrice=1490\n         → executeTrade(aliceBuy, bobSell, 1490, infy)\n            → tradeQty=min(50,50)=50, cost=50x1490=74500\n            → aliceAccount.debit(74500)\n            → bobAccount.removeStock('INFY',50)\n            → bobAccount.credit(74500)\n            → aliceAccount.addStock('INFY',50)\n            → aliceBuy.fill(50) → status=FILLED\n            → bobSell.fill(50) → status=FILLED\n            → updateOrderState → setState(FilledState) both\n            → buyBook.poll(), sellBook.poll()\n            → infy.setPrice(1490) [update LTP]\n      → unlock()"]
-        T1A-->T1B
-    end
-
-    subgraph T2 ["TEST 2 — Insufficient Funds (PoorGuy: 500 balance, wants 500x1500=750000)"]
-        direction TB
-        T2A["system.placeBuyOrder(poorGuy, infy, 500, 1500, LIMIT)\n→ build() → new Order(poorGuy...500 shares @1500)\n→ new BuyStockCommand(poorGuyAccount, order)\n→ PoorGuyInvoker.executeNext()\n   → cmd.execute()\n      → estimatedCost=500x1500=750000\n      → balance=500 < 750000\n      → throw InsufficientFundsException\n   → invoker CATCHES exception\n   → recordAudit('REJECTED_FUNDS')\n   → order NEVER reaches StockExchange"]
-    end
-
-    subgraph T3 ["TEST 3 — Partial Fill (Alice buys 100, Charlie sells only 50)"]
-        direction TB
-        T3A["system.placeBuyOrder(alice, infy, 100, 1500, LIMIT)\n→ aliceBuy100 added to buyBook [OPEN, qty=100]"]
-        T3B["system.placeSellOrder(charlie, infy, 50, 1495, LIMIT)\n→ charlieSell50 added to sellBook\n→ matchOrders: 1500 >= 1495 → MATCH\n→ tradeQty = min(100, 50) = 50\n→ executeTrade at 1495\n→ aliceBuy100.fill(50):\n   remainingQty=50, status=PARTIALLY_FILLED\n→ charlieSell50.fill(50):\n   remainingQty=0, status=FILLED\n→ updateOrderState:\n   aliceBuy → setState(new PartiallyFilledState())\n   charlieSell → setState(new FilledState())\n→ charlieSell FILLED → sellBook.poll()\n→ aliceBuy PARTIALLY_FILLED → stays in buyBook"]
-        T3A-->T3B
-    end
-
-    subgraph T4 ["TEST 4 — Cancel Last Order (Undo)"]
-        direction TB
-        T4A["system.placeBuyOrder(alice, infy, 20, 1400, LIMIT)\n→ aliceLowBall added to buyBook [OPEN, won't match]"]
-        T4B["system.cancelLastOrder(alice)\n→ AliceInvoker.undoLast()\n→ executedCommands.pop() → aliceLowBallBuyCmd\n→ cmd.undo()\n→ StockExchange.cancelOrder(aliceLowBall)\n   → lock('INFY')\n   → order.getState().cancel(order)\n      OpenState.cancel():\n        order.setStatus(CANCELLED)\n        order.setState(new CancelledState())\n   → unlock()\n   [lazy removal: stays in heap, drained by\n    drainCancelled() on next matchOrders call]\n→ AliceInvoker.recordAudit('UNDONE')"]
-        T4A-->T4B
-    end
-
-    subgraph T5 ["TEST 5 — Batch Pre-Market Orders (queue then executeAll)"]
-        direction TB
-        T5A["system.queueBuyOrder(alice, infy, 30, 1510, LIMIT)\n→ AliceInvoker.submit(buyCmd30)\n→ pendingCommands.offer() [NOT executed yet]"]
-        T5B["system.queueSellOrder(bob, infy, 30, 1505, LIMIT)\n→ BobInvoker.submit(sellCmd30)\n→ pendingCommands.offer() [NOT executed yet]"]
-        T5C["system.queueBuyOrder(alice, tcs, 5, 3500, LIMIT)\n→ AliceInvoker.submit(buyTcsCmd)\n→ pendingCommands.size()=2 for Alice, 1 for Bob"]
-        T5D["system.executePendingOrders(alice)\n→ AliceInvoker.executeAll()\n→ loop: executeNext() x2\n   → buy 30 INFY @1510: added to buyBook, no match yet\n   → buy 5 TCS @3500: added to TCS buyBook\nsystem.executePendingOrders(bob)\n→ BobInvoker.executeAll()\n→ executeNext(): sell 30 INFY @1505\n→ matchOrders: 1510 >= 1505 → MATCH at 1505\n→ 30 shares filled for alice and bob"]
-        T5A-->T5B-->T5C-->T5D
-    end
-
-    subgraph T6 ["TEST 6 — Portfolios and Audit Logs"]
-        direction TB
-        T6A["system.printPortfolio(alice)\n→ alice.getAccount().toString()\n→ balance + holdings map printed"]
-        T6B["system.printAuditLog(alice)\n→ AliceInvoker.printAuditLog()\n→ prints all [EXECUTED|REJECTED|UNDONE]\n   entries with Instant timestamps"]
-        T6A-->T6B
-    end
-
-    START --> S1
-    S5 --> T1A
-    T1B --> T2A
-    T2A --> T3A
-    T3B --> T4A
-    T4B --> T5A
-    T5D --> T6A
-    T6B --> DONE(["END"])
-```
-
----
-
-### 9.2 Master Sequence Diagram — All 6 Tests End to End
+### 9.1 Master Sequence Diagram — All 6 Tests End to End
 
 > All participants, all classes, in exact execution order from `main()` to end.
 
