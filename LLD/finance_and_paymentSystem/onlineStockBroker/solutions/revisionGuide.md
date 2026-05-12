@@ -14,7 +14,8 @@
 6. [Concurrency Strategy](#6-concurrency-strategy)
 7. [Sequence Diagram — Order Placement Flow](#7-sequence-diagram--order-placement-flow)
 8. [Application Flow](#8-application-flow)
-9. [Quick Revision Cheatsheet](#9-quick-revision-cheatsheet)
+9. [Complete Application Flow — End to End](#9-complete-application-flow--end-to-end)
+10. [Quick Revision Cheatsheet](#10-quick-revision-cheatsheet)
 
 ---
 
@@ -504,7 +505,282 @@ ORDER LIFECYCLE
 
 ---
 
-## 9. Quick Revision Cheatsheet
+## 9. Complete Application Flow — End to End
+
+> **The full `StockBrokerageSystemDemo.main()` call chain — every method, in order, across all 6 tests.**
+> Participants: `StockBrokerageSystem` (Facade) · `StockExchange` · `OrderBuilder` · `BuyStockCommand` / `SellStockCommand` · `OrderInvoker` · `Account` · `OrderState`
+
+### 9.1 Master Application Flowchart
+
+```mermaid
+flowchart TD
+    START(["StockBrokerageSystemDemo.main()"])
+
+    subgraph SETUP ["SETUP — Initialization & Registration"]
+        direction TB
+        S1["StockBrokerageSystem.getInstance()\n→ DCL Singleton\n→ StockExchange.getInstance() [inner DCL]\n→ new ConcurrentHashMap for\n   userInvokers, listedStocks, registeredUsers"]
+        S2["system.listStock(new Stock('INFY', 1500))\nlistStock(new Stock('TCS', 3500))\n→ listedStocks.put(symbol, stock)"]
+        S3["new User('Alice', 200000)\nnew User('Bob', 100000)\nnew User('Charlie', 50000)\nnew User('PoorGuy', 500)"]
+        S4["system.registerUser(alice..poorGuy)\n→ registeredUsers.put(userId, user)\n→ new OrderInvoker() per user\n→ userInvokers.put(userId, invoker)"]
+        S5["bob.getAccount().addStock('INFY', 200)\ncharlie.getAccount().addStock('INFY', 50)\n[give sellers stock to sell]"]
+        S1-->S2-->S3-->S4-->S5
+    end
+
+    subgraph T1 ["TEST 1 — Basic Limit Match (Alice buys 50 INFY @ 1500, Bob sells 50 INFY @ 1490)"]
+        direction TB
+        T1A["system.placeBuyOrder(alice, infy, 50, 1500, LIMIT)\n→ validateUserAndStock()\n→ OrderBuilder.forUser(alice).withStock(infy)\n   .buy(50).withLimit(1500).build()\n→ new LimitOrderStrategy(BUY) in build()\n→ new Order(alice, infy, BUY, LIMIT, 1500, 50, strategy)\n   state=OpenState, status=OPEN\n→ new BuyStockCommand(aliceAccount, order)\n→ AliceInvoker.submit(cmd) → pendingCommands.offer()\n→ AliceInvoker.executeNext()\n   → cmd.execute(): balance=200000 >= 50x1500=75000 OK\n   → StockExchange.placeBuyOrder(order)\n      → validate balance OK\n      → lock('INFY')\n      → buyBook.offer(order) [MAX-HEAP, O(log n)]\n      → matchOrders: sellBook empty → no match\n      → unlock()\n   → executedCommands.push(cmd), recordAudit('EXECUTED')"]
+        T1B["system.placeSellOrder(bob, infy, 50, 1490, LIMIT)\n→ OrderBuilder...sell(50).withLimit(1490).build()\n→ new SellStockCommand(bobAccount, order)\n→ BobInvoker.submit → executeNext()\n   → cmd.execute(): hasSufficientStock(INFY,50)? Yes\n   → StockExchange.placeSellOrder(order)\n      → validate holdings OK\n      → lock('INFY')\n      → sellBook.offer(order) [MIN-HEAP, O(log n)]\n      → matchOrders('INFY', infy)\n         → drainCancelled(buyBook), drainCancelled(sellBook)\n         → bestBuy.effectivePrice=1500\n           bestSell.effectivePrice=1490\n           1500 >= 1490 → MATCH\n         → determineTradePrice: LIMIT/LIMIT → sellPrice=1490\n         → executeTrade(aliceBuy, bobSell, 1490, infy)\n            → tradeQty=min(50,50)=50, cost=50x1490=74500\n            → aliceAccount.debit(74500)\n            → bobAccount.removeStock('INFY',50)\n            → bobAccount.credit(74500)\n            → aliceAccount.addStock('INFY',50)\n            → aliceBuy.fill(50) → status=FILLED\n            → bobSell.fill(50) → status=FILLED\n            → updateOrderState → setState(FilledState) both\n            → buyBook.poll(), sellBook.poll()\n            → infy.setPrice(1490) [update LTP]\n      → unlock()"]
+        T1A-->T1B
+    end
+
+    subgraph T2 ["TEST 2 — Insufficient Funds (PoorGuy: 500 balance, wants 500x1500=750000)"]
+        direction TB
+        T2A["system.placeBuyOrder(poorGuy, infy, 500, 1500, LIMIT)\n→ build() → new Order(poorGuy...500 shares @1500)\n→ new BuyStockCommand(poorGuyAccount, order)\n→ PoorGuyInvoker.executeNext()\n   → cmd.execute()\n      → estimatedCost=500x1500=750000\n      → balance=500 < 750000\n      → throw InsufficientFundsException\n   → invoker CATCHES exception\n   → recordAudit('REJECTED_FUNDS')\n   → order NEVER reaches StockExchange"]
+    end
+
+    subgraph T3 ["TEST 3 — Partial Fill (Alice buys 100, Charlie sells only 50)"]
+        direction TB
+        T3A["system.placeBuyOrder(alice, infy, 100, 1500, LIMIT)\n→ aliceBuy100 added to buyBook [OPEN, qty=100]"]
+        T3B["system.placeSellOrder(charlie, infy, 50, 1495, LIMIT)\n→ charlieSell50 added to sellBook\n→ matchOrders: 1500 >= 1495 → MATCH\n→ tradeQty = min(100, 50) = 50\n→ executeTrade at 1495\n→ aliceBuy100.fill(50):\n   remainingQty=50, status=PARTIALLY_FILLED\n→ charlieSell50.fill(50):\n   remainingQty=0, status=FILLED\n→ updateOrderState:\n   aliceBuy → setState(new PartiallyFilledState())\n   charlieSell → setState(new FilledState())\n→ charlieSell FILLED → sellBook.poll()\n→ aliceBuy PARTIALLY_FILLED → stays in buyBook"]
+        T3A-->T3B
+    end
+
+    subgraph T4 ["TEST 4 — Cancel Last Order (Undo)"]
+        direction TB
+        T4A["system.placeBuyOrder(alice, infy, 20, 1400, LIMIT)\n→ aliceLowBall added to buyBook [OPEN, won't match]"]
+        T4B["system.cancelLastOrder(alice)\n→ AliceInvoker.undoLast()\n→ executedCommands.pop() → aliceLowBallBuyCmd\n→ cmd.undo()\n→ StockExchange.cancelOrder(aliceLowBall)\n   → lock('INFY')\n   → order.getState().cancel(order)\n      OpenState.cancel():\n        order.setStatus(CANCELLED)\n        order.setState(new CancelledState())\n   → unlock()\n   [lazy removal: stays in heap, drained by\n    drainCancelled() on next matchOrders call]\n→ AliceInvoker.recordAudit('UNDONE')"]
+        T4A-->T4B
+    end
+
+    subgraph T5 ["TEST 5 — Batch Pre-Market Orders (queue then executeAll)"]
+        direction TB
+        T5A["system.queueBuyOrder(alice, infy, 30, 1510, LIMIT)\n→ AliceInvoker.submit(buyCmd30)\n→ pendingCommands.offer() [NOT executed yet]"]
+        T5B["system.queueSellOrder(bob, infy, 30, 1505, LIMIT)\n→ BobInvoker.submit(sellCmd30)\n→ pendingCommands.offer() [NOT executed yet]"]
+        T5C["system.queueBuyOrder(alice, tcs, 5, 3500, LIMIT)\n→ AliceInvoker.submit(buyTcsCmd)\n→ pendingCommands.size()=2 for Alice, 1 for Bob"]
+        T5D["system.executePendingOrders(alice)\n→ AliceInvoker.executeAll()\n→ loop: executeNext() x2\n   → buy 30 INFY @1510: added to buyBook, no match yet\n   → buy 5 TCS @3500: added to TCS buyBook\nsystem.executePendingOrders(bob)\n→ BobInvoker.executeAll()\n→ executeNext(): sell 30 INFY @1505\n→ matchOrders: 1510 >= 1505 → MATCH at 1505\n→ 30 shares filled for alice and bob"]
+        T5A-->T5B-->T5C-->T5D
+    end
+
+    subgraph T6 ["TEST 6 — Portfolios and Audit Logs"]
+        direction TB
+        T6A["system.printPortfolio(alice)\n→ alice.getAccount().toString()\n→ balance + holdings map printed"]
+        T6B["system.printAuditLog(alice)\n→ AliceInvoker.printAuditLog()\n→ prints all [EXECUTED|REJECTED|UNDONE]\n   entries with Instant timestamps"]
+        T6A-->T6B
+    end
+
+    START --> S1
+    S5 --> T1A
+    T1B --> T2A
+    T2A --> T3A
+    T3B --> T4A
+    T4B --> T5A
+    T5D --> T6A
+    T6B --> DONE(["END"])
+```
+
+---
+
+### 9.2 Master Sequence Diagram — All 6 Tests End to End
+
+> All participants, all classes, in exact execution order from `main()` to end.
+
+```mermaid
+sequenceDiagram
+    actor Demo
+    participant SBS as StockBrokerageSystem
+    participant SE as StockExchange
+    participant OB as OrderBuilder
+    participant AliceInv as AliceInvoker
+    participant BobInv as BobInvoker
+    participant PGInv as PoorGuyInvoker
+    participant BuyCmd as BuyStockCommand
+    participant SellCmd as SellStockCommand
+    participant AliceAcc as AliceAccount
+    participant BobAcc as BobAccount
+    participant OpenSt as OpenState
+    participant FilledSt as FilledState
+    participant PartSt as PartiallyFilledState
+    participant CancelledSt as CancelledState
+
+    Note over Demo,CancelledSt: SETUP — System Initialization & Registration
+
+    Demo->>SBS: getInstance()
+    SBS->>SE: getInstance() [inner DCL Singleton]
+    SBS->>SBS: new ConcurrentHashMap userInvokers, listedStocks, registeredUsers
+    SBS-->>Demo: facade instance
+
+    Demo->>SBS: listStock(new Stock("INFY", 1500.0))
+    SBS->>SBS: listedStocks.put("INFY", stock)
+    Demo->>SBS: listStock(new Stock("TCS", 3500.0))
+    SBS->>SBS: listedStocks.put("TCS", stock)
+
+    Demo->>SBS: registerUser(alice)
+    SBS->>SBS: registeredUsers.put(aliceId, alice)
+    SBS->>AliceInv: new OrderInvoker() [per-user — own queue + undo stack]
+    SBS->>SBS: userInvokers.put(aliceId, aliceInvoker)
+
+    Demo->>SBS: registerUser(bob), registerUser(charlie), registerUser(poorGuy)
+    SBS->>BobInv: new OrderInvoker()
+    SBS->>PGInv: new OrderInvoker()
+    Note over SBS: charlie's invoker created similarly
+
+    Demo->>BobAcc: addStock("INFY", 200)
+    Demo->>SBS: getStock("INFY") → returns infy reference
+
+    Note over Demo,CancelledSt: TEST 1 — Basic Limit Match
+
+    Demo->>SBS: placeBuyOrder(alice, infy, 50, 1500.0, LIMIT)
+    SBS->>SBS: validateUserAndStock(alice, infy)
+    SBS->>OB: new OrderBuilder().forUser(alice).withStock(infy).buy(50).withLimit(1500.0)
+    OB->>OB: build() → new LimitOrderStrategy(BUY)
+    OB->>OB: new Order(alice,infy,BUY,LIMIT,1500,50,strategy) → state=new OpenState()
+    OB-->>SBS: aliceBuyOrder [OPEN]
+    SBS->>BuyCmd: new BuyStockCommand(aliceAccount, aliceBuyOrder)
+    BuyCmd->>SE: StockExchange.getInstance() [stored for undo]
+    SBS->>AliceInv: submit(buyCmd) → pendingCommands.offer()
+    SBS->>AliceInv: executeNext()
+    AliceInv->>AliceInv: pendingCommands.poll() → buyCmd
+    AliceInv->>BuyCmd: execute()
+    BuyCmd->>BuyCmd: estimatedCost=50x1500=75000, balance=200000 >= 75000 OK
+    BuyCmd->>SE: placeBuyOrder(aliceBuyOrder)
+    SE->>SE: hasSufficientBalance(75000)? Yes
+    SE->>SE: getLockForSymbol("INFY").lock()
+    SE->>SE: getBuyBook("INFY").offer(order) [MAX-HEAP O(log n)]
+    SE->>SE: matchOrders("INFY") → sellBook empty → no match
+    SE->>SE: unlock()
+    AliceInv->>AliceInv: executedCommands.push(buyCmd) [undo stack]
+    AliceInv->>AliceInv: recordAudit("EXECUTED", buyCmd)
+    SBS-->>Demo: aliceBuyOrder reference
+
+    Demo->>SBS: placeSellOrder(bob, infy, 50, 1490.0, LIMIT)
+    SBS->>OB: new OrderBuilder().forUser(bob).withStock(infy).sell(50).withLimit(1490.0)
+    OB->>OB: build() → new LimitOrderStrategy(SELL), new Order(...)
+    OB-->>SBS: bobSellOrder [OPEN]
+    SBS->>SellCmd: new SellStockCommand(bobAccount, bobSellOrder)
+    SBS->>BobInv: submit(sellCmd) → executeNext()
+    BobInv->>SellCmd: execute()
+    SellCmd->>BobAcc: hasSufficientStock("INFY", 50)? Yes (200 shares)
+    SellCmd->>SE: placeSellOrder(bobSellOrder)
+    SE->>SE: hasSufficientStock("INFY", 50)? Yes
+    SE->>SE: getLockForSymbol("INFY").lock()
+    SE->>SE: getSellBook("INFY").offer(bobSellOrder) [MIN-HEAP O(log n)]
+    SE->>SE: matchOrders("INFY")
+    SE->>SE: drainCancelled(buyBook), drainCancelled(sellBook) [no cancelled orders]
+    SE->>SE: bestBuy.effectivePrice=1500 >= bestSell.effectivePrice=1490 → MATCH
+    SE->>SE: determineTradePrice: LIMIT/LIMIT → sellPrice=1490.0
+    SE->>AliceAcc: debit(50 x 1490 = 74500) → balance 200000-74500=125500
+    SE->>BobAcc: removeStock("INFY", 50) → holdings 200-50=150
+    SE->>BobAcc: credit(74500)
+    SE->>AliceAcc: addStock("INFY", 50)
+    SE->>SE: aliceBuyOrder.fill(50) → remaining=0, status=FILLED
+    SE->>SE: bobSellOrder.fill(50) → remaining=0, status=FILLED
+    SE->>SE: updateOrderState: aliceBuyOrder → setState(new FilledState())
+    SE->>SE: updateOrderState: bobSellOrder → setState(new FilledState())
+    SE->>SE: buyBook.poll() [FILLED → remove O(log n)]
+    SE->>SE: sellBook.poll()
+    SE->>SE: infy.setPrice(1490.0) [update LTP]
+    SE->>SE: unlock()
+    BobInv->>BobInv: executedCommands.push(sellCmd), recordAudit("EXECUTED")
+
+    Note over Demo,CancelledSt: TEST 2 — Insufficient Funds Rejection
+
+    Demo->>SBS: placeBuyOrder(poorGuy, infy, 500, 1500.0, LIMIT)
+    SBS->>OB: build() → poorGuyBuyOrder (500 shares @ 1500)
+    SBS->>BuyCmd: new BuyStockCommand(poorGuyAccount, order)
+    SBS->>PGInv: submit(buyCmd) → executeNext()
+    PGInv->>BuyCmd: execute()
+    BuyCmd->>BuyCmd: estimatedCost=500x1500=750000, balance=500
+    BuyCmd->>BuyCmd: 500 < 750000 → throw InsufficientFundsException
+    PGInv->>PGInv: catch InsufficientFundsException
+    PGInv->>PGInv: recordAudit("REJECTED_FUNDS", buyCmd)
+    Note over PGInv: Order NEVER reaches StockExchange
+
+    Note over Demo,CancelledSt: TEST 3 — Partial Fill
+
+    Demo->>SBS: placeBuyOrder(alice, infy, 100, 1500.0, LIMIT)
+    SBS->>SE: (via BuyCmd.execute() → placeBuyOrder)
+    SE->>SE: aliceBuy100 added to buyBook [OPEN, qty=100]
+
+    Demo->>SBS: placeSellOrder(charlie, infy, 50, 1495.0, LIMIT)
+    SBS->>SE: (via SellCmd.execute() → placeSellOrder)
+    SE->>SE: matchOrders: 1500 >= 1495 → MATCH
+    SE->>SE: tradeQty = min(100, 50) = 50, price=1495
+    SE->>AliceAcc: debit(50 x 1495 = 74750)
+    SE->>SE: aliceBuy100.fill(50) → remaining=50, status=PARTIALLY_FILLED
+    SE->>SE: charlieSell50.fill(50) → remaining=0, status=FILLED
+    SE->>SE: updateOrderState: aliceBuy100 → setState(new PartiallyFilledState())
+    SE->>SE: updateOrderState: charlieSell50 → setState(new FilledState())
+    SE->>SE: charlieSell FILLED → sellBook.poll()
+    Note over SE: aliceBuy100 PARTIALLY_FILLED — stays in buyBook for future matches
+
+    Note over Demo,CancelledSt: TEST 4 — Cancel Last Order (Undo)
+
+    Demo->>SBS: placeBuyOrder(alice, infy, 20, 1400.0, LIMIT)
+    SBS->>SE: aliceLowBall added to buyBook [OPEN, won't match at 1400]
+    SBS-->>Demo: lowBall order reference
+
+    Demo->>SBS: cancelLastOrder(alice)
+    SBS->>AliceInv: undoLast()
+    AliceInv->>AliceInv: executedCommands.pop() → aliceLowBallBuyCmd [LIFO]
+    AliceInv->>BuyCmd: undo()
+    BuyCmd->>SE: cancelOrder(aliceLowBall)
+    SE->>SE: getLockForSymbol("INFY").lock()
+    SE->>OpenSt: cancel(aliceLowBall)
+    OpenSt->>OpenSt: order.setStatus(CANCELLED)
+    OpenSt->>CancelledSt: order.setState(new CancelledState())
+    SE->>SE: unlock()
+    Note over SE: Lazy removal — order stays in heap, drained by drainCancelled() on next matchOrders
+    AliceInv->>AliceInv: recordAudit("UNDONE", buyCmd)
+
+    Note over Demo,CancelledSt: TEST 5 — Batch Pre-Market Orders
+
+    Demo->>SBS: queueBuyOrder(alice, infy, 30, 1510.0, LIMIT)
+    SBS->>OB: build() → aliceBuy30
+    SBS->>AliceInv: submit(buyCmd30) [NOT executed — queue only]
+    Note over AliceInv: pendingCommands.offer() — no executeNext() called
+
+    Demo->>SBS: queueSellOrder(bob, infy, 30, 1505.0, LIMIT)
+    SBS->>BobInv: submit(sellCmd30) [NOT executed]
+
+    Demo->>SBS: queueBuyOrder(alice, tcs, 5, 3500.0, LIMIT)
+    SBS->>AliceInv: submit(buyTcsCmd) [NOT executed]
+    Note over AliceInv,BobInv: Alice pending=2, Bob pending=1
+
+    Demo->>SBS: executePendingOrders(alice)
+    SBS->>AliceInv: executeAll()
+    AliceInv->>AliceInv: loop while pendingCommands not empty
+    AliceInv->>BuyCmd: execute() [buy 30 INFY @ 1510]
+    BuyCmd->>SE: placeBuyOrder → buyBook.offer(aliceBuy30)
+    SE->>SE: matchOrders → no sell orders yet → no match
+    AliceInv->>BuyCmd: execute() [buy 5 TCS @ 3500]
+    BuyCmd->>SE: placeBuyOrder → TCS buyBook.offer()
+
+    Demo->>SBS: executePendingOrders(bob)
+    SBS->>BobInv: executeAll()
+    BobInv->>SellCmd: execute() [sell 30 INFY @ 1505]
+    SellCmd->>SE: placeSellOrder → sellBook.offer(bobSell30)
+    SE->>SE: matchOrders: 1510 >= 1505 → MATCH at 1505
+    SE->>SE: tradeQty=min(30,30)=30 → both FILLED
+
+    Note over Demo,CancelledSt: TEST 6 — Portfolios and Audit Logs
+
+    Demo->>SBS: printPortfolio(alice)
+    SBS->>AliceAcc: toString() [balance + holdings map]
+
+    Demo->>SBS: printPortfolio(bob)
+    SBS->>BobAcc: toString()
+
+    Demo->>SBS: printAuditLog(alice)
+    SBS->>AliceInv: printAuditLog()
+    AliceInv->>AliceInv: forEach auditLog entry → print [timestamp] ACTION description
+
+    Demo->>SBS: printAuditLog(bob)
+    SBS->>BobInv: printAuditLog()
+```
+
+---
+
+## 10. Quick Revision Cheatsheet
 
 ### Design Patterns at a Glance
 
