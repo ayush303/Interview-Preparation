@@ -423,7 +423,158 @@ flowchart TD
 
 ---
 
-### 6.2 Detailed Sequence — Phase 3: Command → State → Strategy (Free User)
+### 6.2 Master Sequence Diagram — All 6 Phases End to End
+
+> All participants, all classes, in execution order from `main()` to end.
+
+```mermaid
+sequenceDiagram
+    actor Demo
+    participant MSS as MusicStreamingSystem
+    participant Artist as daftPunk (Artist)
+    participant Subject
+    participant Album as discovery (Album)
+    participant UB as User.Builder
+    participant FreePS as FreePlaybackStrategy
+    participant PremPS as PremiumPlaybackStrategy
+    participant Alice as alice (freeUser)
+    participant Bob as bob (premiumUser)
+    participant Player
+    participant StSt as StoppedState
+    participant PlSt as PlayingState
+    participant PaSt as PausedState
+    participant Playlist
+    participant SS as SearchService
+    participant RS as RecommendationService
+    participant GBS as GenreBasedStrategy
+
+    Note over Demo,GBS: PHASE 1 — Setup & Registration
+
+    Demo->>MSS: getInstance()
+    MSS->>MSS: synchronized DCL — new Player, SearchService, RecommendationService
+    MSS-->>Demo: singleton instance
+
+    Demo->>Artist: new Artist("art1", "Daft Punk")
+    Demo->>MSS: addArtist(daftPunk)
+    MSS->>MSS: artists.put("art1", daftPunk)
+
+    Demo->>Album: new Album("Discovery")
+    Demo->>MSS: addSong("s1","One More Time",...) x4
+    MSS->>MSS: new Song() → songs.put() x4
+    MSS-->>Demo: s1, s2, s3, s4
+
+    Demo->>Album: addTrack(s1), addTrack(s2), addTrack(s3), addTrack(s4)
+
+    Demo->>UB: new User.Builder("Alice").withSubscription(FREE, 0)
+    UB->>FreePS: new FreePlaybackStrategy(songsPlayed=0)
+    UB->>Alice: build() → new User(uuid, "Alice", freePS)
+    Demo->>UB: new User.Builder("Bob").withSubscription(PREMIUM, 0)
+    UB->>PremPS: new PremiumPlaybackStrategy()
+    UB->>Bob: build() → new User(uuid, "Bob", premPS)
+
+    Demo->>MSS: registerUser(alice), registerUser(bob)
+    MSS->>MSS: users.put() x2
+
+    Note over Demo,GBS: PHASE 2 — Observer: Follow Artist & Album Release
+
+    Demo->>Bob: followArtist(daftPunk)
+    Bob->>Bob: followedArtists.add(daftPunk)
+    Bob->>Artist: addObserver(bob)
+    Artist->>Subject: observers.add(bob)
+
+    Demo->>Artist: releaseAlbum(discovery)
+    Artist->>Artist: discography.add(discovery)
+    Artist->>Subject: notifyObservers(daftPunk, discovery)
+    loop for each observer in observers
+        Subject->>Bob: update(daftPunk, discovery)
+        Bob->>Bob: print "[Notification for Bob] Daft Punk released Discovery!"
+    end
+
+    Note over Demo,GBS: PHASE 3 — Command + State + Strategy (Free User Alice)
+
+    Demo->>Player: load(album, alice)
+    Player->>Album: getTracks()
+    Album-->>Player: [s1, s2, s3, s4]
+    Player->>Player: queue=[s1..s4], index=0, state=new StoppedState()
+
+    Demo->>Player: new PlayCommand(player).execute() → clickPlay()
+    Player->>StSt: play(player)
+    StSt->>Player: changeState(new PlayingState()), setStatus(PLAYING)
+    StSt->>Player: playCurrentSongInQueue() [intended — missing in actual code, bug]
+    Player->>FreePS: play(s1, player)
+    FreePS->>FreePS: songsPlayed=0, 0>0 false → no AD, songsPlayed=1
+
+    Demo->>Player: new NextTrackCommand(player).execute() → clickNext()
+    Player->>Player: index++ → 1, playCurrentSongInQueue()
+    Player->>FreePS: play(s2, player)
+    FreePS->>FreePS: 1>0 && 1%3 not 0 → no AD, songsPlayed=2
+
+    Demo->>Player: new PauseCommand(player).execute() → clickPause()
+    Player->>PlSt: pause(player)
+    PlSt->>Player: changeState(new PausedState()), setStatus(PAUSED)
+
+    Demo->>Player: new PlayCommand(player).execute() → clickPlay()
+    Player->>PaSt: play(player)
+    PaSt->>Player: changeState(new PlayingState()), setStatus(PLAYING)
+    Note over PaSt: Resume only — no playCurrentSongInQueue(), song is not replayed
+
+    Demo->>Player: NextTrackCommand.execute() → clickNext()
+    Player->>Player: index++ → 2, playCurrentSongInQueue()
+    Player->>FreePS: play(s3, player)
+    FreePS->>FreePS: 2>0 && 2%3 not 0 → no AD, songsPlayed=3
+
+    Demo->>Player: NextTrackCommand.execute() → clickNext()
+    Player->>Player: index++ → 3, playCurrentSongInQueue()
+    Player->>FreePS: play(s4, player)
+    FreePS->>FreePS: 3>0 && 3%3==0 → AD plays!, songsPlayed=4
+
+    Note over Demo,GBS: PHASE 4 — Premium User Bob (No Ads)
+
+    Demo->>Player: load(album, bob)
+    Album->>Player: getTracks() → [s1, s2, s3, s4]
+    Player->>Player: currentUser=bob, state=new StoppedState()
+
+    Demo->>Player: PlayCommand.execute() → clickPlay()
+    Player->>StSt: play(player) → changeState(PlayingState)
+    Player->>PremPS: play(s1, player)
+    PremPS->>Player: setCurrentSong(s1) [no AD, no counter]
+
+    Demo->>Player: NextTrackCommand.execute() → clickNext()
+    Player->>Player: index++ → 1, playCurrentSongInQueue()
+    Player->>PremPS: play(s2, player)
+    PremPS->>Player: setCurrentSong(s2) [no AD]
+
+    Note over Demo,GBS: PHASE 5 — Composite Pattern (Playlist)
+
+    Demo->>Playlist: new Playlist("My Awesome Mix")
+    Demo->>Playlist: addTrack(s3), addTrack(s1)
+
+    Demo->>Player: load(playlist, bob)
+    Player->>Playlist: getTracks()
+    Playlist-->>Player: [s3, s1]
+    Player->>Player: queue=[s3,s1], index=0
+
+    Demo->>Player: PlayCommand.execute() → clickPlay() → PremPS.play(s3)
+    Demo->>Player: NextTrackCommand.execute() → clickNext() → PremPS.play(s1)
+
+    Note over Demo,GBS: PHASE 6 — Search & Recommendation
+
+    Demo->>MSS: searchSongsByTitle("love")
+    MSS->>SS: searchSongsByTitle(songs.values(), "love")
+    SS->>SS: stream().filter(title.toLowerCase().contains("love")).collect()
+    SS-->>Demo: [Digital Love]
+
+    Demo->>MSS: getSongRecommendations()
+    MSS->>RS: generateRecommendations(songs.values())
+    RS->>GBS: recommend(allSongs)
+    GBS->>GBS: Collections.shuffle(allSongs)
+    GBS->>GBS: stream().limit(5).collect()
+    GBS-->>Demo: [5 random songs]
+```
+
+---
+
+### 6.3 Detailed Sequence — Phase 3: Command → State → Strategy (Free User)
 
 > Every single method call shown in exact order.
 
