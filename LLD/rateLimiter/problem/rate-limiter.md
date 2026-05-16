@@ -138,8 +138,8 @@ classDiagram
     RateLimiterService --> RateLimitingStrategy : delegates to
     RateLimitingStrategy <|.. FixedWindowStrategy : implements
     RateLimitingStrategy <|.. TokenBucketStrategy : implements
-    FixedWindowStrategy +-- UserRequestInfo : inner class
-    TokenBucketStrategy +-- TokenBucket : inner class
+    FixedWindowStrategy *-- UserRequestInfo : inner class
+    TokenBucketStrategy *-- TokenBucket : inner class
     RateLimiterDemo --> RateLimiterService : uses
     RateLimiterDemo --> FixedWindowStrategy : creates
     RateLimiterDemo --> TokenBucketStrategy : creates
