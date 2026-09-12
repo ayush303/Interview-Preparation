@@ -5,7 +5,8 @@ Complete diagram set for the Meeting Room Scheduler LLD, written in
 inline on GitHub.
 
 **Related:** [Problem statement](../problem/meeting-room-scheduler.md) ·
-[Java implementation](../solution/)
+[Java implementation](../solution/) ·
+[Concurrency & Thread Safety analysis](../solution/concurrency-and-thread-safety.md)
 
 ---
 
@@ -39,6 +40,8 @@ inline on GitHub.
 | "When do two meetings conflict?" | [05](05-flowcharts.md) § 5 |
 | "How would you add a Slack notification?" | [06](06-usecase-component-activity.md) § 2 |
 | "Does this scale to multiple servers?" | [06](06-usecase-component-activity.md) § 5 |
+| "What's wrong with your thread safety?" | [Concurrency analysis](../solution/concurrency-and-thread-safety.md) § 8 — measured defects |
+| "How would you improve the locking?" | [Concurrency analysis](../solution/concurrency-and-thread-safety.md) § 9 |
 
 ---
 
