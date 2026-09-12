@@ -6,7 +6,8 @@
 
 **Related:** [Problem statement](../problem/meeting-room-scheduler.md) ·
 [Design diagrams](../classDiagram/) ·
-[Race sequence diagram](../classDiagram/03-sequence-diagrams.md)
+[Race sequence diagram](../classDiagram/03-sequence-diagrams.md) ·
+[Revision guide](revision.md) — the condensed version of this page
 
 ---
 

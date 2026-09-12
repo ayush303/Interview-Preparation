@@ -6,7 +6,7 @@ these do too.
 | Program | What it does |
 |---|---|
 | [`ConcurrencyTestSuite`](ConcurrencyTestSuite.java) | **Asserts** thread safety. 12 tests, pass/fail output. |
-| [`ConcurrentBookingSimulation`](ConcurrentBookingSimulation.java) | **Shows** thread safety. 50 users, 30 rooms, 62 threads, every booking logged live. |
+| [`ConcurrentBookingSimulation`](ConcurrentBookingSimulation.java) | **Shows** thread safety. 500 users, 200 rooms, a 30-thread pool, every booking logged live. |
 
 Use the suite to know it is correct; use the simulation to *watch* it be correct.
 
@@ -86,8 +86,8 @@ global, would delete this whole problem.
 
 # 2. ConcurrentBookingSimulation
 
-A narrated run you can actually watch: **50 users, 30 meeting rooms, 62 threads**, with
-every booking attempt logged as it happens.
+A narrated run you can actually watch: **500 users, 200 meeting rooms, a 30-thread
+worker pool**, with every booking attempt logged as it happens.
 
 ```bash
 javac -d out $(find LLD/meetingRoomScheduler -name '*.java')
@@ -98,38 +98,44 @@ Each log line shows the sequence number, **which thread** ran it, the elapsed ti
 user, what they asked for, and what they got:
 
 ```
-  #001 user-39     272.9ms  BOOK   Manish    10:00-11:00 12 seats  ✅ CONFIRMED MTG-1  in Vesuvius (BOARD_ROOM, cap 12)
-  #002 user-09     274.0ms  BOOK   Ivan      10:00-11:00  6 seats  ✅ CONFIRMED MTG-7  in Alps     (CONFERENCE, cap 7)
-  #019 user-11     280.3ms  BOOK   Karan     10:00-11:00  2 seats  ✅ CONFIRMED MTG-8  in Tahoe    (HUDDLE_SPACE, cap 2)
-  #022 user-07     282.2ms  BOOK   Gopal     10:00-11:00 14 seats  ❌ REJECTED   no room free that seats 14
+  #0001 booker-01      55.6ms  BOOK   Alice.T1    10:00-11:00 12 seats ✅ CONFIRMED MTG-1 in Rockies-F7 (CONFERENCE, cap 12)
+  #0002 booker-30      56.7ms  BOOK   Deepa.T1    10:00-11:00  7 seats ✅ CONFIRMED MTG-2 in Cedar-F1   (CONFERENCE, cap 7)
+  #0003 booker-29      57.2ms  BOOK   Chirag.T1   10:00-11:00  2 seats ✅ CONFIRMED MTG-3 in Zagros-F1  (HUDDLE_SPACE, cap 2)
+  #0190 booker-13      99.4ms  BOOK   Bhavna.T4   10:00-11:00 11 seats ❌ REJECTED   no room free that seats 11
 ```
 
-The strategy is `BestFit`, so you can watch a 2-person meeting take the 2-seat huddle
-room while the 30-seat board room stays free for someone who needs it.
+The strategy is `BestFit`, so you can watch a 2-person meeting take a 2-seat huddle
+room while the 30-seat board rooms stay free for people who need them.
+
+At full verbosity this prints ~2400 lines. Pass `--summary` (or `-s`) to skip the
+per-attempt lines and print only the phase totals, occupancy grid and final report
+(~300 lines).
 
 ## The four phases
 
 | Phase | What it demonstrates |
 |---|---|
-| **1 — Thundering herd** | All 50 users request the *same* 10:00 slot at the same instant, each on its own thread, released by a spin-wait start gun. Rooms fill up live, then rejections begin. |
-| **2 — A normal day** | 150 requests spread over 09:00–18:00 on a 12-thread pool. High parallel throughput, little contention. |
-| **3 — Cancellations** | 10 meetings are cancelled while other threads race to claim the freed windows — you see `🗑 RELEASED` immediately followed by `♻️ CLAIMED`. |
+| **1 — Thundering herd** | All 500 users request the *same* 10:00 slot. Every request is queued behind a start gun, so the 30-thread pool is saturated the instant it opens. With 200 rooms, **exactly 200 win and 300 are turned away** — the cleanest possible demonstration of the invariant. |
+| **2 — A normal day** | 1500 requests spread over 09:00–18:00. High parallel throughput, little contention. |
+| **3 — Cancellations** | 40 meetings are cancelled while other threads race to claim the freed windows — you see `🗑 RELEASED` immediately followed by `♻️ CLAIMED`. |
 | **4 — Verification** | Prints the occupancy grid, then checks **every** confirmed pair per room for overlap. |
 
 ## The output that matters
 
 ```
-  ROOM           TYPE           CAP    9 10 11 12 13 14 15 16 17   BOOKED  ORGANIZERS
-  Everest        HUDDLE_SPACE     2    ■  ■  ·  ■  ■  ■  ■  ·  ·      6    Deepa, Karan, Nadia+3 more
-  Alps           CONFERENCE       6    ■  ■  ■  ■  ■  ■  ·  ·  ■      7    Aditya, Sneha, Deepa+4 more
-  Nook           BOARD_ROOM      10    ·  ■  ■  ·  ■  ■  ■  ■  ■      7    Hannah, Ishaan, Nadia+4 more
+  ROOM              TYPE           CAP    9 10 11 12 13 14 15 16 17   BOOKED  ORGANIZERS
+  Everest-F1        HUDDLE_SPACE     2    ■  ■  ■  ■  ■  ■  ■  ■  ■      9    Deepa.T1, Juhi.T1, Priya.T2+6 more
+  Alps-F1           CONFERENCE       6    ■  ■  ■  ■  ■  ■  ■  ■  ■      9    Aditya.T1, Aditya.T1, Deepa.T1+6 more
+  Nook-F1           BOARD_ROOM      10    ■  ■  ■  ■  ■  ■  ■  ■  ■      9    Leela.T2, Bhavna.T1, Sameer.T2+6 more
 ```
 
 ```
-  threads involved       : 62 (50 client threads + 12 pool workers)
-  threads that won a room: 41
-  confirmed meetings     : 163
-  rejected (no room)     : 37
+  users                  : 500
+  rooms                  : 200
+  worker pool threads    : 30
+  threads that won a room: 30
+  confirmed meetings     : 1523
+  rejected (no room)     : 477
   overlapping pairs      : 0   <-- the number that matters
 
   ✅ PASS — no room is ever double-booked.
@@ -139,13 +145,24 @@ Exit code is `0` only when `overlapping pairs` is `0`, so the simulation doubles
 stress test. Counts vary run to run — the interleaving is genuinely nondeterministic —
 but the overlap count must always be zero.
 
-## Two implementation notes
+## Three implementation notes
 
-**Phase 1 does not use the worker pool, on purpose.** Tasks that spin-wait for each
-other must never share a pool smaller than their own count: the first 12 tasks would
-occupy every thread and spin forever waiting for peers that can never be scheduled.
-That is thread-starvation deadlock — and this simulation hit it on the first run before
-phase 1 was switched to one dedicated thread per user.
+**Wait on the submitter, never on your peers.** All 500 phase-1 requests are queued into
+the 30-thread pool behind a `CountDownLatch` that **main** releases. That is safe at any
+pool size: 30 tasks park on the latch, 470 wait in the queue, and main frees them all.
+
+An earlier version instead had each task wait until *all 500 tasks had checked in* — and
+deadlocked instantly. The first 30 occupied every thread and waited forever for 470 peers
+that could never be scheduled, because no thread was free to run them. That is
+**thread-starvation deadlock**, and the distinction is the whole lesson: tasks waiting on
+a *coordinator* are fine; tasks waiting on *each other* need at least as many threads as
+there are tasks.
+
+**Latch here, spin-wait there.** This simulation gates on a park-based `CountDownLatch`,
+while `ConcurrencyTestSuite` uses a hot spin-wait. Both are start guns, chosen for
+different jobs: spin-release wins when the race window is two or three instructions wide
+(see note 2 in the suite section), but 500 spinning threads on a handful of cores would
+just saturate the CPU, and here the critical section scans 200 rooms anyway.
 
 **`System.out` is shared mutable state too.** Every log line goes through one
 `synchronized` block. Without it the lines tear into each other and the output is
