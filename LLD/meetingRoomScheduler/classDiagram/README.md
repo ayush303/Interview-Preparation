@@ -6,7 +6,8 @@ inline on GitHub.
 
 **Related:** [Problem statement](../problem/meeting-room-scheduler.md) ·
 [Java implementation](../solution/) ·
-[Concurrency & Thread Safety analysis](../solution/concurrency-and-thread-safety.md)
+[Concurrency & Thread Safety analysis](../solution/concurrency-and-thread-safety.md) ·
+**[Revision guide](../solution/revision.md)** ← start here if you are short on time
 
 ---
 
