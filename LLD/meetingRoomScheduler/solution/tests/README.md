@@ -1,9 +1,21 @@
 # Concurrency Tests
 
+Two programs, no build system and no JUnit — this repo compiles with plain `javac`, so
+these do too.
+
+| Program | What it does |
+|---|---|
+| [`ConcurrencyTestSuite`](ConcurrencyTestSuite.java) | **Asserts** thread safety. 12 tests, pass/fail output. |
+| [`ConcurrentBookingSimulation`](ConcurrentBookingSimulation.java) | **Shows** thread safety. 50 users, 30 rooms, 62 threads, every booking logged live. |
+
+Use the suite to know it is correct; use the simulation to *watch* it be correct.
+
+---
+
+# 1. ConcurrencyTestSuite
+
 Twelve tests proving how `MeetingScheduler` achieves thread safety — and pinning the two
 places where it does not.
-
-No build system, no JUnit. This repo compiles with plain `javac`, so the tests do too.
 
 ## Running
 
@@ -37,13 +49,6 @@ Exit code is `0` unless something in the first ten breaks. The two `XFAIL`s are
 **documented defects, not test bugs** — see
 [`../concurrency-and-thread-safety.md`](../concurrency-and-thread-safety.md) §8 and §9.
 
-## Files
-
-| File | Purpose |
-|---|---|
-| `ConcurrencyTestSuite.java` | The tests |
-| `TestHarness.java` | ~120-line runner with PASS / FAIL / XFAIL / XPASS outcomes |
-
 ## Three things worth knowing
 
 **1. A passing concurrency test proves nothing on its own.** These tests *detect* races;
@@ -76,3 +81,72 @@ conventions work around it:
 That workaround is itself a finding: **an un-resettable singleton is hostile to testing.**
 A package-private reset hook, or injecting the scheduler rather than reaching for a
 global, would delete this whole problem.
+
+---
+
+# 2. ConcurrentBookingSimulation
+
+A narrated run you can actually watch: **50 users, 30 meeting rooms, 62 threads**, with
+every booking attempt logged as it happens.
+
+```bash
+javac -d out $(find LLD/meetingRoomScheduler -name '*.java')
+java  -cp out LLD.meetingRoomScheduler.solution.tests.ConcurrentBookingSimulation
+```
+
+Each log line shows the sequence number, **which thread** ran it, the elapsed time, the
+user, what they asked for, and what they got:
+
+```
+  #001 user-39     272.9ms  BOOK   Manish    10:00-11:00 12 seats  ✅ CONFIRMED MTG-1  in Vesuvius (BOARD_ROOM, cap 12)
+  #002 user-09     274.0ms  BOOK   Ivan      10:00-11:00  6 seats  ✅ CONFIRMED MTG-7  in Alps     (CONFERENCE, cap 7)
+  #019 user-11     280.3ms  BOOK   Karan     10:00-11:00  2 seats  ✅ CONFIRMED MTG-8  in Tahoe    (HUDDLE_SPACE, cap 2)
+  #022 user-07     282.2ms  BOOK   Gopal     10:00-11:00 14 seats  ❌ REJECTED   no room free that seats 14
+```
+
+The strategy is `BestFit`, so you can watch a 2-person meeting take the 2-seat huddle
+room while the 30-seat board room stays free for someone who needs it.
+
+## The four phases
+
+| Phase | What it demonstrates |
+|---|---|
+| **1 — Thundering herd** | All 50 users request the *same* 10:00 slot at the same instant, each on its own thread, released by a spin-wait start gun. Rooms fill up live, then rejections begin. |
+| **2 — A normal day** | 150 requests spread over 09:00–18:00 on a 12-thread pool. High parallel throughput, little contention. |
+| **3 — Cancellations** | 10 meetings are cancelled while other threads race to claim the freed windows — you see `🗑 RELEASED` immediately followed by `♻️ CLAIMED`. |
+| **4 — Verification** | Prints the occupancy grid, then checks **every** confirmed pair per room for overlap. |
+
+## The output that matters
+
+```
+  ROOM           TYPE           CAP    9 10 11 12 13 14 15 16 17   BOOKED  ORGANIZERS
+  Everest        HUDDLE_SPACE     2    ■  ■  ·  ■  ■  ■  ■  ·  ·      6    Deepa, Karan, Nadia+3 more
+  Alps           CONFERENCE       6    ■  ■  ■  ■  ■  ■  ·  ·  ■      7    Aditya, Sneha, Deepa+4 more
+  Nook           BOARD_ROOM      10    ·  ■  ■  ·  ■  ■  ■  ■  ■      7    Hannah, Ishaan, Nadia+4 more
+```
+
+```
+  threads involved       : 62 (50 client threads + 12 pool workers)
+  threads that won a room: 41
+  confirmed meetings     : 163
+  rejected (no room)     : 37
+  overlapping pairs      : 0   <-- the number that matters
+
+  ✅ PASS — no room is ever double-booked.
+```
+
+Exit code is `0` only when `overlapping pairs` is `0`, so the simulation doubles as a
+stress test. Counts vary run to run — the interleaving is genuinely nondeterministic —
+but the overlap count must always be zero.
+
+## Two implementation notes
+
+**Phase 1 does not use the worker pool, on purpose.** Tasks that spin-wait for each
+other must never share a pool smaller than their own count: the first 12 tasks would
+occupy every thread and spin forever waiting for peers that can never be scheduled.
+That is thread-starvation deadlock — and this simulation hit it on the first run before
+phase 1 was switched to one dedicated thread per user.
+
+**`System.out` is shared mutable state too.** Every log line goes through one
+`synchronized` block. Without it the lines tear into each other and the output is
+unreadable — a small demonstration of the very problem the scheduler is solving.
