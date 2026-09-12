@@ -94,7 +94,7 @@ public class MeetingScheduler {
         meeting.cancel();
         // 3. Remove the meeting from its room's meeting list so the slot is freed.
         roomMeetings.get(meeting.getRoom().getId()).remove(meeting);
-        // 4. Notify the cancelled observers.
+        // 4. Notify the cancelled observer.
         notifyMeetingCancelled(meeting);
     }
 

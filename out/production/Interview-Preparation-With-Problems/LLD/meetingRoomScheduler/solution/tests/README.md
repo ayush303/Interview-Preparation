@@ -26,21 +26,52 @@ javac -d out $(find LLD/meetingRoomScheduler -name '*.java')
 java  -cp out LLD.meetingRoomScheduler.solution.tests.ConcurrencyTestSuite
 ```
 
-Expected output today:
+Each test is presented as a numbered **SCENARIO**, narrated in the same style as
+`MeetingSchedulerDemo` — real `[Email]` / `[Calendar]` observer output and the actual
+`Meeting.toString()` of what got booked, so the run reads as a story:
 
 ```
-[  PASS ] no double-booking when 200 threads race for one room
-[  PASS ] every losing thread gets a domain exception, never a null or NPE
-[  PASS ] INVARIANT: no two confirmed meetings in a room ever overlap
-[  PASS ] meeting ids stay unique under contention
-[  PASS ] concurrent cancel of the same meeting has exactly one winner
-[  PASS ] back-to-back windows both succeed in the same room concurrently
-[  PASS ] book/cancel churn never leaks a room claim
-[  PASS ] getInstance() hands every thread the same instance
-[  PASS ] a throwing observer does not fail the booking
-[  PASS ] observers can be added/removed during notification without CME
-[ XFAIL ] §8.2 Meeting.complete() is atomic across threads
-[ XFAIL ] §8.1 booking throughput is not capped by observer latency
+========== SCENARIO 1: No Double-Booking Under Contention ==========
+What it proves : the find → select → claim sequence is atomic, so only one thread can win
+Setup          : 200 threads, ONE qualifying room, all requesting the SAME window
+
+  Registered room: OnlyRoom (CONFERENCE, capacity: 200)
+  Releasing 200 threads at 09:00-10:00, all needing 200 seats...
+
+[Email] Meeting scheduled: "Sprint Planning" in OnlyRoom (09:00-10:00) organized by Alice
+[Calendar] Meeting added to calendar: "Sprint Planning" in OnlyRoom (09:00-10:00)
+
+  Scheduled: Meeting{id=MTG-1, subject='Sprint Planning', room=OnlyRoom, time=09:00-10:00, status=SCHEDULED}
+  threads that raced           : 200
+  bookings confirmed           : 1
+  rejected with exception      : 199
+
+  Note the observer output above fired exactly ONCE — proof that only
+  one booking was ever committed, not merely that one counter won.
+
+Result: ✅ PASS
+```
+
+That last point is why the real observers are attached rather than mocked: seeing
+`[Email]` print **once** while 200 threads competed is stronger evidence than a counter
+reading 1. High-volume scenarios detach the channels (via `quietly(...)`) so the
+narration is not buried under thousands of notification lines.
+
+A summary table closes the run:
+
+```
+  [  PASS ] Scenario 1   No Double-Booking Under Contention
+  [  PASS ] Scenario 2   Losing Threads Fail Cleanly
+  [  PASS ] Scenario 3   The Core Invariant Under a Chaos Workload
+  [  PASS ] Scenario 4   Unique Meeting Ids Under Contention
+  [  PASS ] Scenario 5   Concurrent Cancellation Has One Winner
+  [  PASS ] Scenario 6   Back-to-Back Bookings Are Allowed
+  [  PASS ] Scenario 7   Book/Cancel Churn Never Leaks a Room
+  [  PASS ] Scenario 8   Singleton Identity Across Threads
+  [  PASS ] Scenario 9   Observer Fault Isolation
+  [  PASS ] Scenario 10  Observer Registration During Notification
+  [ XFAIL ] Scenario 11  Meeting.complete() Atomicity  [§8.2]
+  [ XFAIL ] Scenario 12  Booking Throughput vs Observer Latency  [§8.1]
 
   10 passed, 0 failed, 2 known defects (expected failures), 0 unexpected passes
 ```
