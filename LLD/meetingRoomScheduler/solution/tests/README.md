@@ -1,0 +1,152 @@
+# Concurrency Tests
+
+Two programs, no build system and no JUnit — this repo compiles with plain `javac`, so
+these do too.
+
+| Program | What it does |
+|---|---|
+| [`ConcurrencyTestSuite`](ConcurrencyTestSuite.java) | **Asserts** thread safety. 12 tests, pass/fail output. |
+| [`ConcurrentBookingSimulation`](ConcurrentBookingSimulation.java) | **Shows** thread safety. 50 users, 30 rooms, 62 threads, every booking logged live. |
+
+Use the suite to know it is correct; use the simulation to *watch* it be correct.
+
+---
+
+# 1. ConcurrencyTestSuite
+
+Twelve tests proving how `MeetingScheduler` achieves thread safety — and pinning the two
+places where it does not.
+
+## Running
+
+From the repository root:
+
+```bash
+javac -d out $(find LLD/meetingRoomScheduler -name '*.java')
+java  -cp out LLD.meetingRoomScheduler.solution.tests.ConcurrencyTestSuite
+```
+
+Expected output today:
+
+```
+[  PASS ] no double-booking when 200 threads race for one room
+[  PASS ] every losing thread gets a domain exception, never a null or NPE
+[  PASS ] INVARIANT: no two confirmed meetings in a room ever overlap
+[  PASS ] meeting ids stay unique under contention
+[  PASS ] concurrent cancel of the same meeting has exactly one winner
+[  PASS ] back-to-back windows both succeed in the same room concurrently
+[  PASS ] book/cancel churn never leaks a room claim
+[  PASS ] getInstance() hands every thread the same instance
+[  PASS ] a throwing observer does not fail the booking
+[  PASS ] observers can be added/removed during notification without CME
+[ XFAIL ] §8.2 Meeting.complete() is atomic across threads
+[ XFAIL ] §8.1 booking throughput is not capped by observer latency
+
+  10 passed, 0 failed, 2 known defects (expected failures), 0 unexpected passes
+```
+
+Exit code is `0` unless something in the first ten breaks. The two `XFAIL`s are
+**documented defects, not test bugs** — see
+[`../concurrency-and-thread-safety.md`](../concurrency-and-thread-safety.md) §8 and §9.
+
+## Three things worth knowing
+
+**1. A passing concurrency test proves nothing on its own.** These tests *detect* races;
+they cannot prove absence. Broken code can pass by luck. That is why every test here
+forces maximum collision rather than hoping for one.
+
+**2. How threads are released decides whether a race is found at all.** The
+`complete()` race was originally caught **7 times in 2000** trials using two threads and
+a `CountDownLatch`. Switching to six threads released by a **hot spin-wait** found the
+same bug **2491 times in 3000**. `park`/`unpark` wakes threads in a cascade tens of
+microseconds apart — far too slow to hit a two-instruction window. Use latches for coarse
+races, spin-release for narrow ones.
+
+**3. `XFAIL` keeps known bugs visible without breaking the build.** Deleting a test for a
+known bug hides it; failing the build on it means the test never gets committed.
+`knownDefect(...)` does neither — and if the test starts passing, the harness reports
+`XPASS` and tells you to promote it to `test(...)`. Applying §9 Fixes 1 and 2 flips both
+`XFAIL`s to `XPASS` with all ten other tests still green.
+
+## A note on test isolation
+
+`MeetingScheduler` is a singleton with **no reset**, so state leaks between tests. Two
+conventions work around it:
+
+- every test registers its own rooms, ids prefixed with the test name
+- tests needing "exactly one room qualifies" take a capacity from
+  `nextExclusiveCapacity()`, which climbs monotonically; since tests run sequentially,
+  the newest tier is always exclusive. Filler rooms stay at or below 20 seats.
+
+That workaround is itself a finding: **an un-resettable singleton is hostile to testing.**
+A package-private reset hook, or injecting the scheduler rather than reaching for a
+global, would delete this whole problem.
+
+---
+
+# 2. ConcurrentBookingSimulation
+
+A narrated run you can actually watch: **50 users, 30 meeting rooms, 62 threads**, with
+every booking attempt logged as it happens.
+
+```bash
+javac -d out $(find LLD/meetingRoomScheduler -name '*.java')
+java  -cp out LLD.meetingRoomScheduler.solution.tests.ConcurrentBookingSimulation
+```
+
+Each log line shows the sequence number, **which thread** ran it, the elapsed time, the
+user, what they asked for, and what they got:
+
+```
+  #001 user-39     272.9ms  BOOK   Manish    10:00-11:00 12 seats  ✅ CONFIRMED MTG-1  in Vesuvius (BOARD_ROOM, cap 12)
+  #002 user-09     274.0ms  BOOK   Ivan      10:00-11:00  6 seats  ✅ CONFIRMED MTG-7  in Alps     (CONFERENCE, cap 7)
+  #019 user-11     280.3ms  BOOK   Karan     10:00-11:00  2 seats  ✅ CONFIRMED MTG-8  in Tahoe    (HUDDLE_SPACE, cap 2)
+  #022 user-07     282.2ms  BOOK   Gopal     10:00-11:00 14 seats  ❌ REJECTED   no room free that seats 14
+```
+
+The strategy is `BestFit`, so you can watch a 2-person meeting take the 2-seat huddle
+room while the 30-seat board room stays free for someone who needs it.
+
+## The four phases
+
+| Phase | What it demonstrates |
+|---|---|
+| **1 — Thundering herd** | All 50 users request the *same* 10:00 slot at the same instant, each on its own thread, released by a spin-wait start gun. Rooms fill up live, then rejections begin. |
+| **2 — A normal day** | 150 requests spread over 09:00–18:00 on a 12-thread pool. High parallel throughput, little contention. |
+| **3 — Cancellations** | 10 meetings are cancelled while other threads race to claim the freed windows — you see `🗑 RELEASED` immediately followed by `♻️ CLAIMED`. |
+| **4 — Verification** | Prints the occupancy grid, then checks **every** confirmed pair per room for overlap. |
+
+## The output that matters
+
+```
+  ROOM           TYPE           CAP    9 10 11 12 13 14 15 16 17   BOOKED  ORGANIZERS
+  Everest        HUDDLE_SPACE     2    ■  ■  ·  ■  ■  ■  ■  ·  ·      6    Deepa, Karan, Nadia+3 more
+  Alps           CONFERENCE       6    ■  ■  ■  ■  ■  ■  ·  ·  ■      7    Aditya, Sneha, Deepa+4 more
+  Nook           BOARD_ROOM      10    ·  ■  ■  ·  ■  ■  ■  ■  ■      7    Hannah, Ishaan, Nadia+4 more
+```
+
+```
+  threads involved       : 62 (50 client threads + 12 pool workers)
+  threads that won a room: 41
+  confirmed meetings     : 163
+  rejected (no room)     : 37
+  overlapping pairs      : 0   <-- the number that matters
+
+  ✅ PASS — no room is ever double-booked.
+```
+
+Exit code is `0` only when `overlapping pairs` is `0`, so the simulation doubles as a
+stress test. Counts vary run to run — the interleaving is genuinely nondeterministic —
+but the overlap count must always be zero.
+
+## Two implementation notes
+
+**Phase 1 does not use the worker pool, on purpose.** Tasks that spin-wait for each
+other must never share a pool smaller than their own count: the first 12 tasks would
+occupy every thread and spin forever waiting for peers that can never be scheduled.
+That is thread-starvation deadlock — and this simulation hit it on the first run before
+phase 1 was switched to one dedicated thread per user.
+
+**`System.out` is shared mutable state too.** Every log line goes through one
+`synchronized` block. Without it the lines tear into each other and the output is
+unreadable — a small demonstration of the very problem the scheduler is solving.

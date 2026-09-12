@@ -22,7 +22,7 @@
 8. [Gaps — what is NOT protected](#8-gaps--what-is-not-protected)
 9. [Improvements, in priority order](#9-improvements-in-priority-order)
 10. [Beyond one JVM](#10-beyond-one-jvm)
-11. [The test suite this code is missing](#11-the-test-suite-this-code-is-missing)
+11. [The concurrency test suite](#11-the-concurrency-test-suite)
 12. [Interview cheatsheet](#12-interview-cheatsheet)
 
 ---
@@ -290,17 +290,32 @@ protected *incidentally* — it is only reachable through `synchronized cancelMe
 `complete()` has **no such protection**: the scheduler exposes no `completeMeeting(id)`,
 so any thread holding a `Meeting` reference calls it directly, with no lock.
 
-Two threads calling `complete()` on the same meeting, 2000 trials:
+Racing threads calling `complete()` on the same meeting, 3000 trials:
 
 ```
-trials                      : 2000
-trials where BOTH succeeded : 7
+trials                           : 3000
+trials with MULTIPLE winners     : 2491        (2400-2700 across runs)
+worst case simultaneous winners  : 7           (of 6 racing threads + retries)
 VERDICT: RACE OBSERVED - the guard is check-then-act with no lock
 ```
 
-**Both threads passed the "is it SCHEDULED?" guard.** The state machine that requirement
-8 says must reject double transitions does not, in fact, always reject them. 7/2000 is
-rare enough to survive every manual test and still misfire in production.
+**All of those threads passed the "is it SCHEDULED?" guard.** The state machine that
+requirement 8 says must reject double transitions does not, in fact, reject them — it
+fails in the large majority of contended attempts.
+
+> **How the measurement was sharpened, and why it matters.** An earlier version of this
+> probe used two threads released by a `CountDownLatch` and caught the race only
+> **7 times in 2000** — rare enough to look like a curiosity. The version in
+> [`tests/ConcurrencyTestSuite.java`](tests/ConcurrencyTestSuite.java) uses six threads
+> released by a **hot spin-wait** instead, and the same defect shows up in **2491 of
+> 3000** trials.
+>
+> Nothing about the bug changed; only the tool did. `park`/`unpark` wakes threads in a
+> cascade tens of microseconds apart, which is an eternity beside the two-or-three
+> instruction window between the guard and the assignment. Threads already spinning on
+> separate cores see the flag flip at essentially the same instant. **A concurrency test
+> that "passes" is often just a test that never opened the window** — which is exactly
+> why the suite favours spin-release over latches wherever the window is narrow.
 
 ### 8.3 🟡 `Meeting.status` has no cross-thread visibility guarantee
 
@@ -424,14 +439,14 @@ public synchronized void complete() {
 }
 ```
 
-`synchronized` closes the 7-in-2000 race; `volatile` fixes §8.3 so readers that never
+`synchronized` closes the 2491-in-3000 race; `volatile` fixes §8.3 so readers that never
 take the lock still see the current value. Both are needed — neither alone is sufficient.
 
 **✅ Verified.** With this patch applied, the same 2000-trial probe reports:
 
 ```
                               BEFORE       AFTER
-trials where BOTH completed :  7 / 2000  →  0 / 2000
+trials with MULTIPLE winners : 2491 / 3000  →  0 / 3000
 ```
 
 While here, add the missing scheduler entry point so the lifecycle is driven under the
@@ -570,7 +585,7 @@ mint `MTG-1`.
 
 ---
 
-## 11. The Test Suite This Code Is Missing
+## 11. The Concurrency Test Suite
 
 There is currently **no test** for the property the problem statement calls the central
 constraint. The minimum worth adding:
@@ -605,17 +620,50 @@ void concurrentBookingsForTheSameRoomProduceExactlyOneWinner() throws Exception 
 ```
 
 The `CountDownLatch` matters: without it, threads trickle in and the race window never
-opens. Companion tests worth writing:
+opens.
 
-| Test | Asserts |
-|---|---|
-| Concurrent `cancel` of the same meeting | exactly one succeeds, the rest throw |
-| Concurrent `complete()` on one meeting | exactly one succeeds — **currently fails, 7/2000** |
-| Booking + cancelling the same room in a loop | the room is never lost nor double-held |
-| Back-to-back windows under load | 10:00–11:00 and 11:00–12:00 both succeed |
-| Slow observer | booking latency does not scale with observer count *(currently fails)* |
+### ✅ This suite now exists
 
-The last two are the ones that turn §8.1 and §8.2 from prose into a red build.
+It lives in [`tests/ConcurrencyTestSuite.java`](tests/ConcurrencyTestSuite.java) — twelve
+tests, no build system and no JUnit required:
+
+```bash
+cd <repo root>
+javac -d out $(find LLD/meetingRoomScheduler -name '*.java')
+java  -cp out LLD.meetingRoomScheduler.solution.tests.ConcurrencyTestSuite
+```
+
+| Test | Asserts | Today |
+|---|---|---|
+| 200 threads race for one room | exactly one booking is confirmed | ✅ PASS |
+| Losing threads | all fail with `MeetingSchedulerException`, never NPE | ✅ PASS |
+| **Invariant after a chaos workload** | **no two confirmed meetings in any room overlap** | ✅ PASS |
+| Meeting ids under contention | never duplicated | ✅ PASS |
+| Concurrent cancel of one meeting | exactly one winner | ✅ PASS |
+| Back-to-back windows, concurrent | both succeed, in the same room | ✅ PASS |
+| Book/cancel churn | no room claim ever leaks | ✅ PASS |
+| `getInstance()` from many threads | one instance | ✅ PASS |
+| Throwing observer | booking still succeeds, healthy observer still fires | ✅ PASS |
+| Observer churn during notification | no `ConcurrentModificationException` | ✅ PASS |
+| §8.2 `complete()` is atomic | one winner among racing threads | ❌ **XFAIL** |
+| §8.1 throughput vs observer latency | latency does not serialize bookings | ❌ **XFAIL** |
+
+**Result today: 10 passed, 0 failed, 2 expected failures.**
+
+The chaos-workload invariant test is the strongest of the ten. Rather than counting
+winners — which requires knowing in advance how many bookings *should* succeed — it
+fires 300 competing bookings across 5 rooms and 12 overlapping windows, then checks
+every confirmed pair in every room for overlap. It asserts the domain rule itself, so it
+catches double-bookings no counting test would notice.
+
+### Why XFAIL instead of deleting or disabling them
+
+A suite that omits the tests for known bugs teaches you nothing; one that fails the build
+on them can never be committed. `knownDefect(...)` marks a test as expected-to-fail: the
+defect stays visible on every run, the build stays green, and if the test ever passes the
+harness reports **XPASS** with an instruction to promote it. Applying §9 Fixes 1 and 2 to
+a scratch copy flips both to XPASS, with all ten other tests still passing — which is the
+real proof that the fixes work and break nothing.
 
 ---
 
@@ -637,7 +685,7 @@ The last two are the ones that turn §8.1 and §8.2 from prose into a red build.
 > Three things. The lock is held while observers do I/O, so one slow email channel
 > serializes every booking in the building — I measured 20 independent bookings taking
 > 1074 ms instead of 50. `Meeting.complete()` is an unguarded check-then-act; two
-> threads both pass the status guard about 7 times in 2000. And it's one global lock, so
+> threads both pass the status guard in 2491 of 3000 contended trials. And it's one global lock, so
 > unrelated rooms contend. The first two are a few lines each; the third is a real
 > redesign I'd only do with measurements in hand.
 
@@ -659,7 +707,7 @@ classes:
 | 1 | Do 200 racing threads double-book? | **1 confirmed, 199 rejected — PASS** | 1 / 199 — still PASS |
 | 2 | Is the monitor held across observer I/O? | **1074 ms vs ~50 ms ideal — SERIALIZED** | **56 ms — parallel** |
 | 3 | Can a reader see a stale `status`? | Update observed, but **not guaranteed** by the JMM | `volatile` makes it guaranteed |
-| 4 | Is `Meeting.complete()` safe from two threads? | **7 / 2000 trials double-completed — RACE** | **0 / 2000** |
+| 4 | Is `Meeting.complete()` safe from racing threads? | **2491 / 3000 trials double-completed — RACE** | **0 / 3000** |
 
 Both fixes were applied to a scratch copy of the solution and the probes re-run, which
 is where the "after" column comes from. Probe 1 passing on the patched build is the
