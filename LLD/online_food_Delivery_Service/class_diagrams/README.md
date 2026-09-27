@@ -58,10 +58,19 @@ compare-and-set on the agent's availability guarantees no agent is ever double-b
 
 ## A note on ⚠️ marks
 
-These diagrams document the code **as it is today**. Wherever the implementation
-diverges from the intended design, it is marked ⚠️. The full list of 15 gaps is in the
-[problem statement](../problems/online-food-delivery-service.md#️-known-gaps-in-the-current-implementation).
-Two of them were confirmed by running the code:
+> **All 15 gaps are now fixed** in [`../solution/`](../solution/) and pinned by tests
+> in [`../solution/tests/`](../solution/tests/). The diagrams were drawn from the
+> original code, so read each ⚠️ as "this was a bug, and the fix is in the gaps table".
+> The corrected designs are already drawn where it matters: the fixed dispatch
+> flowchart ([06 § 4](06-activity-flowcharts.md#4-assigndeliveryorder--nearestavailableagentstrategyfindagent)),
+> atomic `transitionTo` ([04 Flow 10](04-sequence-diagrams.md#flow-10--race-restaurant-starts-cooking-while-customer-cancels)),
+> the intended stock lifecycle ([05 § 6](05-state-diagrams.md#6-menu-item-availability-and-the-unused-stock-model)),
+> and the intended assignment flow ([04 Flow 7](04-sequence-diagrams.md#flow-7--ready-for-pickup--automatic-assignment-intended-design)).
+
+Wherever the original implementation diverged from the intended design, it is marked
+⚠️. The full list of 15 gaps, each with its fix, is in the
+[problem statement](../problems/online-food-delivery-service.md#known-gaps-and-how-they-were-fixed).
+Two of them were confirmed by running the original code:
 
 1. **`NearestAvailableAgentStrategy` throws `NullPointerException`**, because it reads the
    customer's address from `order.getDeliveryAgent()`, which is still `null`.
