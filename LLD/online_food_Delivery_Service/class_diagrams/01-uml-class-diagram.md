@@ -3,7 +3,7 @@
 > The structural view. Every field, method and relationship below mirrors the Java
 > sources in [`../solution/`](../solution/). ⚠️ marks code that diverges from the
 > intended design. See the
-> [known gaps](../problems/online-food-delivery-service.md#️-known-gaps-in-the-current-implementation).
+> [known gaps](../problems/online-food-delivery-service.md#known-gaps-and-how-they-were-fixed).
 
 ---
 
