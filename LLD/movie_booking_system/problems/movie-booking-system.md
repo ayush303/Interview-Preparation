@@ -233,6 +233,75 @@ stored).
 
 ---
 
+## Seat Lock Concurrency
+
+The full write-up, with diagrams and code for each alternative, is in
+[08 — Seat Lock Concurrency](../class_diagrams/08-seat-lock-concurrency.md).
+
+### How it works today
+
+`SeatLockManager` guards each show with its own monitor, `synchronized (show.getLock())`.
+Inside that block:
+
+- **`lockSeats`** checks that *every* requested seat is `AVAILABLE` before writing any
+  of them. It then marks them `LOCKED`, records the holder in
+  `lockedSeats[show][seat] = userId`, and schedules one expiry task
+  (`LOCK_TIMEOUT_MS = 500`) on a `ScheduledExecutorService`. Check and write happen
+  under one lock, so two users can never both see a seat as free and take it, and a
+  multi-seat request is all-or-nothing.
+- **`confirmSeats`** runs after payment, which happens *outside* the lock so a slow
+  gateway blocks nobody. It re-checks that this user still holds every seat. If so the
+  seats become `BOOKED` and the expiry task is cancelled. If the hold expired meanwhile
+  it returns `false` and `BookingManager` refunds.
+- **`unlockSeats`** (called on payment failure, and by the expiry task) releases only
+  seats this user holds, and only reverts seats that are still `LOCKED`. A late expiry
+  can therefore never undo a booking.
+
+Because the lock is per show, bookings for different shows never wait on each other.
+
+### Gaps in that approach
+
+- The lock is per **show**, but `Seat` (and its status) is shared by every show on the
+  **screen**. Two shows on one screen use different monitors on the same seat objects,
+  so they are not serialised against each other.
+- A timer thread plus two bookkeeping maps exist only to answer "is this hold older
+  than 500 ms?".
+- `synchronized` has no timeout, and it only works inside one JVM.
+
+### Better ways, easiest first
+
+| Approach | Idea | When |
+|---|---|---|
+| **Global `synchronized`** | Mark `lockSeats` / `confirmSeats` / `unlockSeats` `synchronized` on the singleton | Easiest correct answer; does not scale |
+| **Per-show lock + lazy expiry** *(recommended)* | A `ShowSeat` per show holds `status`, `lockedBy`, `lockedUntil`. An expired hold simply counts as free. No scheduler, no expiry map | Default single-JVM design |
+| **CAS per seat** | `AtomicReference<Hold>` per `ShowSeat`, `compareAndSet` to lock; multi-seat locks in sorted order and rolls back on failure | Lock-free, when the per-show lock is a measured hot spot |
+| **`ReentrantLock.tryLock(timeout)`** | Like `synchronized` but can give up, can be fair | When callers must fail fast |
+| **SQL conditional `UPDATE`** | `UPDATE show_seat SET LOCKED … WHERE status='AVAILABLE' OR lock_expires_at < now()` and check the row count | Any multi-server deployment |
+| **Redis `SET NX PX`** | Atomic set-if-absent with a TTL; Lua for multi-seat; DB stays the system of record | Very high traffic (premieres) |
+
+---
+
+## Tests
+
+[`solutions/tests/`](../solutions/tests/) holds 12 concurrency scenarios, each with
+**500 threads across 200 users** released together from a latch. They cover a single
+seat contested by everyone, overlapping pairs, random groups, declined cards, payments
+slower than the hold, holds resold after expiry, users trying to steal someone else's
+hold, payments finishing right at the expiry boundary, many shows at once, the
+singleton, and the full `bookTickets` facade. After each race the whole show is checked:
+no seat sold twice, nothing left `LOCKED`, every `BOOKED` seat has a booking.
+
+```bash
+javac -d out $(find LLD/movie_booking_system/solutions -name '*.java')
+java -cp out LLD.movie_booking_system.solutions.tests.ConcurrencyTests
+```
+
+Removing the `synchronized` from `lockSeats` makes 8 of the 12 scenarios fail with real
+double bookings, so the suite does detect the bug it is there for. Details are in the
+[tests README](../solutions/tests/README.md).
+
+---
+
 ## Known Limitations
 
 These are gaps in the current code worth raising in an interview.
@@ -262,3 +331,7 @@ These are gaps in the current code worth raising in an interview.
 ## Implementation
 
 #### [Java Implementation](../solutions/)
+
+## Diagrams
+
+#### [Design Diagrams](../class_diagrams/)

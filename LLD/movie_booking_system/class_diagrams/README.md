@@ -20,6 +20,9 @@ inline on GitHub.
 | 05 | [State Diagrams](05-state-diagrams.md) | Seat lifecycle · with cancellation · booking attempt · payment status · lock entry · singleton · show timeline |
 | 06 | [Activity Diagrams & Flowcharts](06-activity-flowcharts.md) | Master flow · `createBooking` · `lockSeats` · `confirmSeats` · `unlockSeats` · `findShows` · pricing · DCL · swimlanes · adding a pricing rule / payment method |
 | 07 | [Use Case, Component, Object & Deployment](07-usecase-component-deployment.md) | Use case · component · object snapshot · deployment (today and at scale) · extension mind-map |
+| 08 | [Seat Lock Concurrency](08-seat-lock-concurrency.md) | How `SeatLockManager` works · why it is correct · its gaps · global lock · per-show lock + lazy expiry · CAS · `tryLock` · SQL · Redis · comparison table · decision flowchart · how to test it |
+
+Tests: [`../solutions/tests/`](../solutions/tests/) — 12 concurrency scenarios, 500 threads, 200 users.
 
 ---
 
@@ -32,6 +35,8 @@ inline on GitHub.
 | "Draw the ER diagram" | [02 § 2](02-er-diagram.md#2-logical-er-diagram-crows-foot) |
 | "How would you store this?" | [03 § 1–2](03-database-model.md#1-physical-schema-diagram) |
 | "How do you stop two people booking the same seat?" | [04 Flow 7](04-sequence-diagrams.md#flow-7--race-two-customers-lock-the-same-seat-at-once), [03 § 4](03-database-model.md#4-concurrency-at-the-database-layer) |
+| "How is seat locking implemented, and is there a better way?" | [08](08-seat-lock-concurrency.md), [08 § 4](08-seat-lock-concurrency.md#4-side-by-side) |
+| "How do you test it?" | [08 § 6](08-seat-lock-concurrency.md#6-how-to-prove-it-works), [tests README](../solutions/tests/README.md) |
 | "What if payment takes too long?" | [04 Flow 6](04-sequence-diagrams.md#flow-6--lock-expires-during-a-slow-payment-refund) |
 | "Walk me through a booking" | [04 Flow 3](04-sequence-diagrams.md#flow-3--book-tickets-happy-path), [06 § 2](06-activity-flowcharts.md#2-bookingmanagercreatebooking) |
 | "What states can a seat be in?" | [05 § 1](05-state-diagrams.md#1-seat-lifecycle-per-show) |
